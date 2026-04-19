@@ -57,6 +57,8 @@ type StoryStore = {
 
   importStory: (story: StoryProject) => void;
 
+  exportCurrentStoryAsHtml: () => string | null;
+
   getCurrentStory: () => StoryProject | undefined;
   loadDemoStory: () => void;
   setHasHydrated: (state: boolean) => void;
@@ -131,6 +133,206 @@ export const useStoryStore = create<StoryStore>()(
 
       return JSON.stringify(currentStory, null, 2);
     }, 
+
+
+exportCurrentStoryAsHtml: () => {
+  const state = get();
+  const currentStory = state.stories.find(
+    (story) => story.id === state.currentStoryId
+  );
+
+  if (!currentStory) return null;
+
+  const storyJson = JSON.stringify(currentStory);
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${currentStory.title}</title>
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(180deg, #fdf6ff 0%, #f5f9ff 100%);
+            color: #2a2a2a;
+            margin: 0;
+            padding: 0;
+          }
+
+          .container {
+            max-width: 720px;
+            margin: 40px auto;
+            padding: 0 20px;
+          }
+
+          .card {
+            background: white;
+            border-radius: 16px;
+            padding: 28px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+          }
+
+          .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+          }
+
+          .story-title {
+            font-size: 0.9rem;
+            color: #888;
+          }
+
+          h1 {
+            font-size: 1.8rem;
+            margin-bottom: 16px;
+            margin-top: 0;
+          }
+
+          .scene-image {
+            width: 100%;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            max-height: 340px;
+            object-fit: cover;
+          }
+
+          .scene-text {
+            font-size: 1.05rem;
+            line-height: 1.7;
+            margin-bottom: 24px;
+            white-space: pre-wrap;
+          }
+
+          .choices {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+          }
+
+          button {
+            border: none;
+            border-radius: 10px;
+            padding: 14px 16px;
+            font-size: 1rem;
+            background: #3a3a3a;
+            color: white;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            text-align: left;
+          }
+
+          button:hover {
+            background: #555;
+            transform: translateY(-1px);
+          }
+
+          .restart {
+            background: #bbb;
+            color: #222;
+          }
+
+          .restart:hover {
+            background: #999;
+          }
+
+          .empty {
+            color: #999;
+            margin-top: 16px;
+            font-style: italic;
+          }
+        </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+    <div class="topbar">
+      <div>
+        <div class="story-title">${currentStory.title} · ${currentStory.mode}</div>
+      </div>
+      <button class="restart" onclick="restartStory()">Restart</button>
+    </div>
+
+    <h1 id="scene-title"></h1>
+    <img id="scene-image" class="scene-image" style="display:none;" />
+    <div id="scene-text" class="scene-text"></div>
+    <div id="choices" class="choices"></div>
+    <div id="empty" class="empty" style="display:none;"></div>
+  </div>
+
+  <script>
+    const story = ${storyJson};
+    let currentSceneId = story.scenes[0]?.id;
+
+    function getSceneById(id) {
+      return story.scenes.find(scene => scene.id === id);
+    }
+
+    function renderScene() {
+      const scene = getSceneById(currentSceneId);
+      const titleEl = document.getElementById('scene-title');
+      const textEl = document.getElementById('scene-text');
+      const choicesEl = document.getElementById('choices');
+      const emptyEl = document.getElementById('empty');
+      const imageEl = document.getElementById('scene-image');
+
+      if (!scene) {
+        titleEl.textContent = 'Missing scene';
+        textEl.textContent = '';
+        choicesEl.innerHTML = '';
+        emptyEl.style.display = 'block';
+        emptyEl.textContent = 'This scene could not be found.';
+        imageEl.style.display = 'none';
+        return;
+      }
+
+      titleEl.textContent = scene.title || 'Untitled scene';
+      textEl.textContent = scene.text || '';
+
+      const firstImage = scene.assets && scene.assets.length > 0 ? scene.assets[0] : null;
+      if (firstImage && firstImage.uri) {
+        imageEl.src = firstImage.uri;
+        imageEl.alt = firstImage.alt || '';
+        imageEl.style.display = 'block';
+      } else {
+        imageEl.style.display = 'none';
+        imageEl.removeAttribute('src');
+      }
+
+      choicesEl.innerHTML = '';
+      emptyEl.style.display = 'none';
+
+      if (scene.choices && scene.choices.length > 0) {
+        scene.choices.forEach(choice => {
+          const btn = document.createElement('button');
+          btn.textContent = choice.label + (choice.targetSceneId ? '' : ' (no target yet)');
+          btn.onclick = () => {
+            if (choice.targetSceneId) {
+              currentSceneId = choice.targetSceneId;
+              renderScene();
+            }
+          };
+          choicesEl.appendChild(btn);
+        });
+      } else {
+        emptyEl.style.display = 'block';
+        emptyEl.textContent = 'The story ends here.';
+      }
+    }
+
+    function restartStory() {
+      currentSceneId = story.scenes[0]?.id;
+      renderScene();
+    }
+
+    renderScene();
+  </script>
+</body>
+  </div>
+</html>`;
+},
 
 addScene: (scene) => {
   const newId = scene.id || createSceneId();

@@ -11,6 +11,7 @@ export default function StoryScreen() {
     const scenes = currentStory?.scenes || [];
     const title = currentStory?.title || 'Untitled story';
     const exportCurrentStory = useStoryStore((state) => state.exportCurrentStory);
+    const exportCurrentStoryAsHtml = useStoryStore((state) => state.exportCurrentStoryAsHtml);
 
   return (
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.container}>
@@ -117,6 +118,45 @@ onPress={async () => {
     >
       <Text style={styles.buttonText}>⬇ Export JSON</Text>
     </Pressable>
+
+    <Pressable
+      style={styles.exportButton}
+      onPress={async () => {
+        const html = exportCurrentStoryAsHtml();
+
+        if (!html) {
+          Alert.alert('Export failed', 'No current story to export.');
+          return;
+        }
+
+        try {
+          const fileName = `${title.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'story'}.html`;
+          const fileUri = FileSystem.documentDirectory + fileName;
+
+          await FileSystem.writeAsStringAsync(fileUri, html, {
+            encoding: FileSystem.EncodingType.UTF8,
+          });
+
+          const canShare = await Sharing.isAvailableAsync();
+
+          if (!canShare) {
+            Alert.alert('Export saved', `HTML saved to: ${fileUri}`);
+            return;
+          }
+
+          await Sharing.shareAsync(fileUri, {
+            mimeType: 'text/html',
+            dialogTitle: 'Export story HTML',
+          });
+        } catch (error) {
+          console.error('HTML export error:', error);
+          Alert.alert('Export failed', 'Could not create or share the HTML file.');
+        }
+      }}
+    >
+      <Text style={styles.buttonText}>🌐 Export HTML</Text>
+    </Pressable>
+
 
     </ScrollView>
   );
