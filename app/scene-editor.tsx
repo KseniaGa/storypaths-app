@@ -17,6 +17,8 @@ export default function SceneEditorScreen() {
 
   const scrollRef = useRef<ScrollView>(null);
 
+  const [expandedChoiceIndex, setExpandedChoiceIndex] = useState<number | null>(null);
+
   const existingScene =
     sceneId !== undefined && sceneId !== ''
       ? scenes.find((scene) => scene.id === sceneId)
@@ -151,110 +153,157 @@ export default function SceneEditorScreen() {
         {sceneText || 'No scene text yet.'}
       </Text>
 
+      <View style={{ height: 1, backgroundColor: '#eee', marginVertical: 16 }} />
+
       <Text style={styles.label}>Choices</Text>
 
-      {choices.map((choice, index) => (
-<View key={index} style={{ marginBottom: 20 }}>
 
-  {/* Row: label + delete */}
-  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-    <Text style={{ fontWeight: '500' }}>
-      • {choice.label}
-    </Text>
+{choices.map((choice, index) => {
+  const targetScene = scenes.find(
+    (s) => s.id === choice.targetSceneId
+  );
 
-    <Pressable
-      style={{ padding: 8 }}
-      onPress={() => {
-        const updatedChoices = choices.filter((_, i) => i !== index);
-        setChoices(updatedChoices);
-      }}
-    >
-      <Text style={{ color: '#ff3b30', fontWeight: '600' }}>✕</Text>
-    </Pressable>
-  </View>
+  return (
+    <View key={index} style={{ marginBottom: 20 }}>
 
-{choice.targetSceneId === undefined && (
-<Pressable
-  onPress={() => {
-    let parentId = existingScene?.id;
+      {/* Row: label + delete */}
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Text style={{ fontWeight: '500' }}>
+          • {choice.label || '(empty choice)'}
+        </Text>
 
-    // Case 1: existing saved scene → update it
-    if (existingScene) {
-      const existingIndex = scenes.findIndex(
-        (scene) => scene.id === existingScene.id
-      );
+        <Pressable
+          style={{ padding: 8 }}
+          onPress={() => {
+            const updatedChoices = choices.filter((_, i) => i !== index);
+            setChoices(updatedChoices);
+          }}
+        >
+          <Text style={{ color: '#ff3b30', fontWeight: '600' }}>✕</Text>
+        </Pressable>
+      </View>
 
-      updateScene(existingIndex, {
-        id: existingScene.id,
-        title: sceneTitle || 'Untitled scene',
-        text: sceneText || '',
-        choices,
-        assets,
-      });
-    } 
-    // Case 2: brand-new scene → create it first
-    else {
-      parentId = addScene({
-        id: '',
-        title: sceneTitle || 'Untitled scene',
-        text: sceneText || '',
-        choices,
-        assets,
-      });
-    }
+      {/* Current target */}
+      <Text style={{ color: '#666', marginTop: 4 }}>
+        {choice.targetSceneId
+          ? `Goes to: ${targetScene?.title || 'Unknown'}`
+          : 'No target selected'}
+      </Text>
 
-    router.push({
-      pathname: '/scene-editor',
-      params: {
-        parentSceneId: parentId,
-        choiceIndex: index.toString(),
-      },
-    });
-  }}
-  style={{
-    marginTop: 10,
-    marginBottom: 12,
-  }}
->
-  <Text style={{ color: '#007AFF', fontWeight: '600' }}>
-    + Create this scene
-  </Text>
-</Pressable>
-)}
-
-  {/* Label */}
-  <Text style={styles.label}>Select next scene</Text>
-
-  {/* Scene picker */}
-  {scenes.map((scene, sceneIdx) => (
-    <Pressable
-      key={sceneIdx}
-      onPress={() => {
-        const updatedChoices = [...choices];
-        updatedChoices[index] = {
-          ...choice,
-          targetSceneId: scene.id,
-        };
-        setChoices(updatedChoices);
-      }}
-      style={{ paddingVertical: 4 }}
-    >
-      <Text
-        style={{
-          color:
-            choice.targetSceneId === scene.id
-              ? '#007AFF'
-              : '#333',
+      {/* Change target button */}
+      <Pressable
+        style={{ marginTop: 8 }}
+        onPress={() => {
+          setExpandedChoiceIndex(
+            expandedChoiceIndex === index ? null : index
+          );
         }}
       >
-        → {scene.title || `Scene ${sceneIdx + 1}`}
-      </Text>
-    </Pressable>
-  ))}
-</View>
-      ))}
+        <Text style={{ color: '#007AFF', fontWeight: '600' }}>
+          {expandedChoiceIndex === index ? 'Hide targets' : 'Change target'}
+        </Text>
+      </Pressable>
 
-      <Text style={styles.label}>Scene image</Text>
+      {/* Target list (only when expanded) */}
+      {expandedChoiceIndex === index && (
+        <View style={{ marginTop: 8, paddingLeft: 8 }}>
+          <Text style={{ color: '#666', marginBottom: 6 }}>
+            Select next scene
+          </Text>
+
+          {scenes.map((scene, sceneIdx) => (
+            <Pressable
+              key={scene.id}
+              onPress={() => {
+                const updatedChoices = [...choices];
+                updatedChoices[index] = {
+                  ...choice,
+                  targetSceneId: scene.id,
+                };
+                setChoices(updatedChoices);
+                setExpandedChoiceIndex(null);
+              }}
+              style={{ paddingVertical: 6 }}
+            >
+              <Text
+                style={{
+                  color:
+                    choice.targetSceneId === scene.id
+                      ? '#007AFF'
+                      : '#333',
+                }}
+              >
+                → {scene.title || `Scene ${sceneIdx + 1}`}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+
+      {/* Create scene button */}
+      {choice.targetSceneId === undefined && existingScene && (
+        <Pressable
+          style={{ marginTop: 8, paddingVertical: 8 }}
+          onPress={() => {
+            const existingIndex = scenes.findIndex(
+              (scene) => scene.id === existingScene.id
+            );
+
+            updateScene(existingIndex, {
+              id: existingScene.id,
+              title: sceneTitle || 'Untitled scene',
+              text: sceneText || '',
+              choices,
+              assets,
+            });
+
+            router.push({
+              pathname: '/scene-editor',
+              params: {
+                parentSceneId: existingScene.id,
+                choiceIndex: index.toString(),
+              },
+            });
+          }}
+        >
+          <Text style={{ color: '#007AFF', fontWeight: '600' }}>
+            + Create next scene
+          </Text>
+        </Pressable>
+      )}
+    </View>
+  );
+})}
+      
+<View style={{ height: 1, backgroundColor: '#eee', marginVertical: 16 }} />
+
+      <TextInput
+        style={styles.input}
+        placeholder="Add a choice..."
+        value={newChoice}
+        onChangeText={setNewChoice}
+        onFocus={() => {
+          setTimeout(() => {
+            scrollRef.current?.scrollToEnd({ animated: true });
+          }, 150);
+        }}
+      />
+
+      <Pressable
+        style={styles.buttonSecondary}
+        onPress={() => {
+          if (!newChoice.trim()) return;
+          setChoices([
+                    ...choices,
+                    { label: newChoice.trim() },
+                  ]);
+          setNewChoice('');
+        }}
+      >
+        <Text>Add choice</Text>
+      </Pressable>
+
+  <Text style={styles.label}>Scene image</Text>
 
     <Pressable
       style={styles.buttonSecondary}
@@ -285,31 +334,7 @@ export default function SceneEditorScreen() {
       />
     ) : null}
 
-      <TextInput
-        style={styles.input}
-        placeholder="Add a choice..."
-        value={newChoice}
-        onChangeText={setNewChoice}
-        onFocus={() => {
-          setTimeout(() => {
-            scrollRef.current?.scrollToEnd({ animated: true });
-          }, 150);
-        }}
-      />
 
-      <Pressable
-        style={styles.buttonSecondary}
-        onPress={() => {
-          if (!newChoice.trim()) return;
-          setChoices([
-                    ...choices,
-                    { label: newChoice.trim() },
-                  ]);
-          setNewChoice('');
-        }}
-      >
-        <Text>Add choice</Text>
-      </Pressable>
 
 <Pressable
   style={styles.button}
@@ -371,6 +396,7 @@ export default function SceneEditorScreen() {
 >
   <Text style={styles.buttonText}>Save scene</Text>
 </Pressable>
+
 
     </ScrollView>
    </KeyboardAvoidingView>
@@ -447,5 +473,29 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     fontStyle: 'italic',
   },
+
+  smallActionButton: {
+  marginTop: 8,
+  paddingVertical: 8,
+},
+
+smallActionText: {
+  color: '#007AFF',
+  fontWeight: '600',
+},
+
+targetList: {
+  marginTop: 8,
+  paddingLeft: 8,
+},
+
+targetLabel: {
+  color: '#666',
+  marginBottom: 6,
+},
+
+targetOption: {
+  paddingVertical: 6,
+},
 
 });
