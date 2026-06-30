@@ -55,6 +55,7 @@ type StoryStore = {
   toggleSceneDone: (id: string) => void;
 
   renameStory: (id: string, newTitle: string) => void;
+  setStoryIcon: (id: string, icon: string) => void;
 
   toggleShowSceneTitlesInPlay: () => void;
 
@@ -85,14 +86,15 @@ export const useStoryStore = create<StoryStore>()(
       setHasHydrated: (state: boolean) => set({ _hasHydrated: state }),
 
       createStory: (title, mode) => {
-        const newStory: StoryProject = {
+        const newStory = {
           id: createStoryId(),
           title,
           mode,
+          icon: '🪲',
           scenes: [],
           storyValues: [],
           backgroundMusic: undefined,
-        };
+        } as StoryProject & { icon?: string };
 
         set((state) => ({
           stories: [...state.stories, newStory],
@@ -131,6 +133,15 @@ export const useStoryStore = create<StoryStore>()(
         stories: state.stories.map((story) =>
           story.id === id
             ? { ...story, title: newTitle }
+            : story
+        ),
+      })),
+
+            setStoryIcon: (id, icon) =>
+      set((state) => ({
+        stories: state.stories.map((story) =>
+          story.id === id
+            ? { ...story, icon }
             : story
         ),
       })),
@@ -656,10 +667,11 @@ addScene: (scene) => {
       },
 
       loadDemoStory: () => {
-        const demoStory: StoryProject = {
+        const demoStory = {
           id: 'demo-goose-story',
           title: 'Goose Story',
           mode: 'personal',
+          icon: '🪿',
           scenes: [
   {
     id: 'goose',
@@ -714,7 +726,7 @@ addScene: (scene) => {
     assets: [],
   },
 ],
-        };
+        } as StoryProject & { icon?: string };
 
         set((state) => {
           const existing = state.stories.find((s) => s.id === demoStory.id);

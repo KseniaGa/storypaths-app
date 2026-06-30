@@ -9,8 +9,7 @@ export default function DrawScreen() {
   const signatureRef = useRef<any>(null);
   const { sceneId, drawingAssetId } = useLocalSearchParams();
 
-  const [selectedColor, setSelectedColor] = useState('#111111');
-const [isEraser, setIsEraser] = useState(false);
+  const selectedColorRef = useRef('#111111');
 
 const drawingColors = [
   '#111111',
@@ -38,18 +37,6 @@ const [isLoadingDrawing, setIsLoadingDrawing] = useState(false);
     ? scene?.assets?.find((asset) => asset.id === drawingAssetId)
     : undefined;
 
-  if (!scene || sceneIndex === -1) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.heading}>Drawing pad ✏️</Text>
-        <Text style={styles.empty}>Scene not found.</Text>
-
-        <Pressable style={styles.secondaryButton} onPress={() => router.replace('/story')}>
-          <Text>← Back to story</Text>
-        </Pressable>
-      </View>
-    );
-  }
 
   useEffect(() => {
   const loadExistingDrawing = async () => {
@@ -80,6 +67,29 @@ const [isLoadingDrawing, setIsLoadingDrawing] = useState(false);
   loadExistingDrawing();
 }, [drawingAsset?.uri]);
 
+  if (!scene || sceneIndex === -1) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.heading}>Drawing pad ✏️</Text>
+        <Text style={styles.empty}>Scene not found.</Text>
+
+        <Pressable style={styles.secondaryButton} onPress={() => router.replace('/story')}>
+          <Text>← Back to story</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+const getNextDrawingPosition = () => {
+  const imageCount = (scene.assets || []).filter((asset) => asset.type === 'image').length;
+  const offset = (imageCount % 5) * 22;
+
+  return {
+    x: Math.min(offset, 120),
+    y: Math.min(offset, 90),
+  };
+};
+
 const saveDrawing = async (signature: string) => {
   try {
     const base64 = signature.replace('data:image/png;base64,', '');
@@ -107,10 +117,9 @@ const saveDrawing = async (signature: string) => {
         id: `drawing-${Date.now()}`,
         type: 'image' as const,
         uri: drawingUri,
-        x: 0,
-        y: 0,
-        width: 260,
-        height: 220,
+        ...getNextDrawingPosition(),
+        width: 220,
+        height: 170,
         alt: 'Drawing',
       },
     ];
@@ -141,6 +150,7 @@ const saveDrawing = async (signature: string) => {
 
       <View style={styles.toolCard}>
   <Text style={styles.toolLabel}>Drawing tools</Text>
+  <Text style={styles.toolHint}>Choose colors while drawing. Your existing lines should stay on the canvas.</Text>
 
   <View style={styles.colorRow}>
     {drawingColors.map((color) => (
@@ -150,11 +160,10 @@ const saveDrawing = async (signature: string) => {
         style={[
           styles.colorSwatch,
           { backgroundColor: color },
-          selectedColor === color && !isEraser && styles.colorSwatchSelected,
+          false && styles.colorSwatchSelected,
         ]}
         onPress={() => {
-          setSelectedColor(color);
-          setIsEraser(false);
+          selectedColorRef.current = color;
           signatureRef.current?.changePenColor(color);
           signatureRef.current?.changePenSize(2, 4);
         }}
@@ -166,10 +175,9 @@ const saveDrawing = async (signature: string) => {
     <Pressable
       style={[
         styles.toolButton,
-        isEraser && styles.toolButtonActive,
+        false && styles.toolButtonActive,
       ]}
       onPress={() => {
-        setIsEraser(true);
         signatureRef.current?.changePenColor('#ffffff');
         signatureRef.current?.changePenSize(12, 18);
       }}
@@ -177,7 +185,7 @@ const saveDrawing = async (signature: string) => {
       <Text
         style={[
           styles.toolButtonText,
-          isEraser && styles.toolButtonTextActive,
+          false && styles.toolButtonTextActive,
         ]}
       >
         Eraser
@@ -187,8 +195,7 @@ const saveDrawing = async (signature: string) => {
     <Pressable
       style={styles.toolButton}
       onPress={() => {
-        setIsEraser(false);
-        signatureRef.current?.changePenColor(selectedColor);
+        signatureRef.current?.changePenColor(selectedColorRef.current);
         signatureRef.current?.changePenSize(2, 4);
       }}
     >
@@ -212,9 +219,9 @@ const saveDrawing = async (signature: string) => {
         <SignatureScreen
           ref={signatureRef}
           dataURL={initialDrawingDataUrl || undefined}
-          penColor={isEraser ? '#ffffff' : selectedColor}
-          minWidth={isEraser ? 12 : 2}
-          maxWidth={isEraser ? 18 : 4}
+          penColor="#111111"
+          minWidth={2}
+          maxWidth={4}
           onOK={saveDrawing}
           onEmpty={handleEmpty}
           descriptionText="Draw a symbol, memory, map, or feeling"
@@ -296,6 +303,13 @@ toolLabel: {
   fontSize: 13,
   fontWeight: '700',
   color: '#666',
+  marginBottom: 6,
+},
+
+toolHint: {
+  color: '#777',
+  fontSize: 13,
+  lineHeight: 18,
   marginBottom: 10,
 },
 

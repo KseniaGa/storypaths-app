@@ -234,7 +234,11 @@ return (
       </Text>
     </Pressable>
 
-    <Text style={styles.storyTitle}>{title || 'Untitled story'}</Text>
+    <View style={styles.playHeroCard}>
+      <Text style={styles.storyTitle}>Playing</Text>
+      <Text style={styles.playHeroTitle}>{title || 'Untitled story'}</Text>
+      {isPreviewMode && <Text style={styles.previewBadge}>Preview mode</Text>}
+    </View>
 
     {backgroundMusic && (
   <Pressable
@@ -301,7 +305,7 @@ return (
       borderRadius: 12,
       overflow: 'hidden',
       marginBottom: 16,
-      backgroundColor: '#fafafa',
+      backgroundColor: '#FFFCF2',
     }}
   >
     {imageAssets.map((asset) => (
@@ -433,162 +437,182 @@ if (choice.valueChange) {
 }
 
 const styles = StyleSheet.create({
+  container: {
+    flexGrow: 1,
+    padding: 24,
+    paddingTop: 52,
+    paddingBottom: 72,
+    backgroundColor: '#F7F1E1',
+  },
+  backButton: {
+    alignSelf: 'flex-start',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#D8CCAA',
+    marginBottom: 18,
+    backgroundColor: '#FFFCF2',
+  },
+  backButtonText: {
+    color: '#3D3528',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  playHeroCard: {
+    backgroundColor: '#F5EFD9',
+    borderWidth: 2,
+    borderColor: '#C9B46F',
+    borderRadius: 28,
+    padding: 18,
+    marginBottom: 20,
+  },
+  storyTitle: {
+    fontSize: 13,
+    color: '#6F675A',
+    marginBottom: 4,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  playHeroTitle: {
+    fontSize: 30,
+    lineHeight: 36,
+    color: '#247322',
+    fontWeight: '900',
+  },
+  previewBadge: {
+    alignSelf: 'flex-start',
+    marginTop: 10,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    backgroundColor: '#E9F2DD',
+    color: '#247322',
+    fontWeight: '900',
+  },
+  backgroundMusicPlayButton: {
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderColor: '#6E9358',
+    borderRadius: 999,
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    backgroundColor: '#FFFCF2',
+    marginBottom: 16,
+  },
+  backgroundMusicPlayButtonActive: {
+    backgroundColor: '#247322',
+    borderColor: '#247322',
+  },
+  backgroundMusicPlayText: {
+    color: '#247322',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  backgroundMusicPlayTextActive: {
+    color: '#fff',
+  },
+  sceneHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 16,
+  },
+  heading: {
+    flex: 1,
+    fontSize: 32,
+    lineHeight: 38,
+    fontWeight: '900',
+    color: '#2A251D',
+  },
+  audioIconButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: '#6E9358',
+    backgroundColor: '#FFFCF2',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  audioIconButtonActive: {
+    backgroundColor: '#247322',
+    borderColor: '#247322',
+  },
+  audioIconText: {
+    fontSize: 20,
+  },
+  body: {
+    fontSize: 19,
+    lineHeight: 30,
+    marginBottom: 28,
+    color: '#3D3528',
+    fontWeight: '500',
+  },
+  label: {
+    fontSize: 14,
+    color: '#6F675A',
+    marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    fontWeight: '900',
+  },
+  choiceButton: {
+    backgroundColor: '#247322',
+    paddingVertical: 17,
+    paddingHorizontal: 18,
+    borderRadius: 18,
+    marginBottom: 12,
+  },
   choiceText: {
     color: '#fff',
-    fontSize: 16,
+    fontSize: 17,
+    fontWeight: '900',
   },
-
-  backgroundMusicPlayButton: {
-  alignSelf: 'flex-start',
-  borderWidth: 1,
-  borderColor: '#ddd',
-  borderRadius: 999,
-  paddingVertical: 9,
-  paddingHorizontal: 14,
-  backgroundColor: '#fff',
-  marginBottom: 16,
-},
-
-backgroundMusicPlayButtonActive: {
-  backgroundColor: '#222',
-  borderColor: '#222',
-},
-
-backgroundMusicPlayText: {
-  color: '#333',
-  fontSize: 14,
-  fontWeight: '700',
-},
-
-backgroundMusicPlayTextActive: {
-  color: '#fff',
-},
+  endingBox: {
+    borderWidth: 1,
+    borderColor: '#D8CCAA',
+    borderRadius: 22,
+    padding: 18,
+    backgroundColor: '#FFFCF2',
+  },
+  endingTitle: {
+    fontSize: 20,
+    fontWeight: '900',
+    marginBottom: 6,
+    color: '#2A251D',
+  },
+  endingText: {
+    color: '#665D4E',
+    lineHeight: 22,
+    fontWeight: '600',
+  },
+  restartButton: {
+    marginTop: 28,
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 18,
+    borderRadius: 999,
+    alignSelf: 'center',
+    backgroundColor: '#FFFCF2',
+    borderWidth: 1,
+    borderColor: '#D8CCAA',
+  },
   restartText: {
-    color: '#555',
+    color: '#3D3528',
     fontSize: 16,
+    fontWeight: '900',
   },
   empty: {
-    color: '#666',
+    color: '#665D4E',
     fontSize: 16,
   },
-  container: {
-  flexGrow: 1,
-  padding: 24,
-  paddingBottom: 60,
-  backgroundColor: '#fff',
-},
-
-storyTitle: {
-  fontSize: 14,
-  color: '#777',
-  marginBottom: 10,
-},
-
-heading: {
-  flex: 1,
-  fontSize: 30,
-  fontWeight: '700',
-},
-
-body: {
-  fontSize: 18,
-  lineHeight: 28,
-  marginBottom: 28,
-  color: '#333',
-},
-
-label: {
-  fontSize: 13,
-  color: '#888',
-  marginBottom: 12,
-  textTransform: 'uppercase',
-  letterSpacing: 0.8,
-},
-
-choiceButton: {
-  backgroundColor: '#222',
-  paddingVertical: 16,
-  paddingHorizontal: 18,
-  borderRadius: 12,
-  marginBottom: 12,
-},
-
-restartButton: {
-  marginTop: 28,
-  alignItems: 'center',
-  paddingVertical: 12,
-},
-
-endingBox: {
-  borderWidth: 1,
-  borderColor: '#eee',
-  borderRadius: 12,
-  padding: 16,
-  backgroundColor: '#fafafa',
-},
-
-endingTitle: {
-  fontSize: 18,
-  fontWeight: '600',
-  marginBottom: 6,
-},
-
-endingText: {
-  color: '#666',
-  lineHeight: 22,
-},
-
-backButton: {
-  alignSelf: 'flex-start',
-  paddingVertical: 8,
-  paddingHorizontal: 12,
-  borderRadius: 10,
-  borderWidth: 1,
-  borderColor: '#ddd',
-  marginBottom: 18,
-  backgroundColor: '#fff',
-},
-
-backButtonText: {
-  color: '#333',
-  fontSize: 15,
-  fontWeight: '600',
-},
-
-sceneHeaderRow: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  gap: 12,
-  marginBottom: 16,
-},
-
-
-audioIconButton: {
-  width: 44,
-  height: 44,
-  borderRadius: 22,
-  borderWidth: 1,
-  borderColor: '#eee',
-  backgroundColor: '#fafafa',
-  alignItems: 'center',
-  justifyContent: 'center',
-},
-
-audioIconButtonActive: {
-  backgroundColor: '#222',
-  borderColor: '#222',
-},
-
-audioIconText: {
-  fontSize: 20,
-},
-
-traceDebug: {
-  color: '#999',
-  fontSize: 12,
-  textAlign: 'center',
-  marginTop: 18,
-},
-
+  traceDebug: {
+    color: '#8C806F',
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 18,
+  },
 });

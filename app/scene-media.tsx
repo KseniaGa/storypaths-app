@@ -90,7 +90,7 @@ function DraggableAsset({
       left: 20,
       top: 20,
       borderWidth: isSelected ? 3 : 0,
-      borderColor: '#007AFF',
+      borderColor: '#247322',
       backgroundColor: '#fff',
     },
     animatedStyle,
@@ -98,6 +98,27 @@ function DraggableAsset({
   resizeMode={asset.alt === 'Drawing' ? 'contain' : 'cover'}
 />
     </GestureDetector>
+  );
+}
+
+function InfoButton({ title, message }: { title: string; message: string }) {
+  return (
+    <Pressable
+      accessibilityLabel={`More information about ${title}`}
+      style={styles.infoButton}
+      onPress={() => Alert.alert(title, message)}
+    >
+      <Text style={styles.infoButtonText}>i</Text>
+    </Pressable>
+  );
+}
+
+function SectionHeader({ title, info }: { title: string; info: string }) {
+  return (
+    <View style={styles.sectionHeaderRow}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      <InfoButton title={title} message={info} />
+    </View>
   );
 }
 
@@ -137,6 +158,39 @@ const stopPreviewAudio = () => {
   }
 };
 
+const getNextImagePosition = (currentAssets: any[]) => {
+  const imageCount = currentAssets.filter((asset) => asset.type === 'image').length;
+  const offset = (imageCount % 5) * 24;
+
+  return {
+    x: Math.min(offset, 120),
+    y: Math.min(offset, 90),
+  };
+};
+
+const saveAssetsToScene = (nextAssets = assets) => {
+  if (!scene || sceneIndex === -1) return;
+
+  updateScene(sceneIndex, {
+    ...scene,
+    assets: nextAssets,
+  });
+};
+
+const openDrawingPad = (drawingAssetId?: string) => {
+  if (!scene || sceneIndex === -1) return;
+
+  saveAssetsToScene();
+
+  router.push({
+    pathname: '/draw',
+    params: {
+      sceneId: scene.id,
+      ...(drawingAssetId ? { drawingAssetId } : {}),
+    },
+  });
+};
+
   if (!scene || sceneIndex === -1) {
     return (
       <View style={styles.container}>
@@ -144,7 +198,7 @@ const stopPreviewAudio = () => {
         <Text style={styles.empty}>Scene not found.</Text>
 
         <Pressable style={styles.buttonSecondary} onPress={() => router.replace('/story')}>
-          <Text>← Back to story</Text>
+          <Text style={styles.buttonSecondaryText}>← Back to story</Text>
         </Pressable>
       </View>
     );
@@ -233,8 +287,7 @@ const stopPreviewAudio = () => {
         id: `asset-${Date.now()}`,
         type: 'image',
         uri: selected.uri,
-        x: 0,
-        y: 0,
+        ...getNextImagePosition(currentAssets),
         width: 220,
         height: 160,
         alt: '',
@@ -324,11 +377,7 @@ const pickAudio = async () => {
 
   const saveMedia = () => {
     stopPreviewAudio();
-
-    updateScene(sceneIndex, {
-      ...scene,
-      assets,
-    });
+    saveAssetsToScene();
 
     router.replace({
       pathname: '/scene-editor',
@@ -340,17 +389,36 @@ const pickAudio = async () => {
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.heading}>Scene media 🎨</Text>
-      <Text style={styles.sceneContext}>{scene.title || 'Untitled scene'}</Text>
+      <Pressable
+        style={styles.backButton}
+        onPress={() =>
+          router.replace({
+            pathname: '/scene-editor',
+            params: { sceneId: scene.id },
+          })
+        }
+      >
+        <Text style={styles.backButtonText}>← Scene</Text>
+      </Pressable>
+
+      <View style={styles.heroCard}>
+        <View style={styles.heroIconTile}>
+          <Text style={styles.heroIcon}>🎨</Text>
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.heading}>Scene media</Text>
+          <Text style={styles.sceneContext}>{scene.title || 'Untitled scene'}</Text>
+        </View>
+      </View>
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Images</Text>
-        <Text style={styles.sectionText}>
-          Add images and arrange them in the scene.
-        </Text>
+        <SectionHeader
+          title="Images"
+          info="Add uploaded images to this scene. Tap an image to select it, then drag it around, resize it, move it forward/backward, or remove it."
+        />
 
         <Pressable style={styles.buttonSecondary} onPress={pickImage}>
-          <Text>Add image</Text>
+          <Text style={styles.buttonSecondaryText}>Add image</Text>
         </Pressable>
 
         {imageAssets.length > 0 && (
@@ -363,11 +431,13 @@ const pickAudio = async () => {
               setSelectedAssetId(null);
             }}
           >
-            <Text>Remove all images</Text>
+            <Text style={styles.buttonSecondaryText}>Remove all images</Text>
           </Pressable>
         )}
 
         {imageAssets.length > 0 ? (
+          <>
+          <Text style={styles.canvasHint}>Tap an image to select it. Drag it to arrange the scene.</Text>
           <View style={styles.canvas}>
             {imageAssets.map((asset) => (
               <DraggableAsset
@@ -379,6 +449,7 @@ const pickAudio = async () => {
               />
             ))}
           </View>
+          </>
         ) : (
           <Text style={styles.empty}>No images yet.</Text>
         )}
@@ -386,6 +457,7 @@ const pickAudio = async () => {
 {selectedAssetId && (
   <View style={styles.selectedAssetPanel}>
     <Text style={styles.selectedAssetTitle}>Selected image</Text>
+    <Text style={styles.selectedAssetMeta}>Use the buttons below, or drag the selected image in the canvas.</Text>
 
     <View style={styles.sizeButtonRow}>
       <Pressable
@@ -439,56 +511,43 @@ const pickAudio = async () => {
         setSelectedAssetId(null);
       }}
     >
-      <Text>Remove selected image</Text>
+      <Text style={styles.buttonSecondaryText}>Remove selected image</Text>
     </Pressable>
   </View>
 )}
       </View>
 
 <View style={styles.section}>
-  <Text style={styles.sectionTitle}>Drawing</Text>
-  <Text style={styles.sectionText}>
-    Draw a quick symbol, memory, map, or feeling for this scene.
-  </Text>
+  <SectionHeader
+    title="Drawing"
+    info="Create a finger drawing for this scene. You can add more than one drawing. Drawings return to this media screen as movable images."
+  />
 
   <Pressable
     style={styles.buttonSecondary}
-    onPress={() =>
-      router.push({
-        pathname: '/draw',
-        params: { sceneId: scene.id },
-      })
-    }
+    onPress={() => openDrawingPad()}
   >
-    <Text>Add new drawing ✏️</Text>
+    <Text style={styles.buttonSecondaryText}>Add another drawing ✏️</Text>
   </Pressable>
 
   {firstDrawingAsset && (
     <Pressable
       style={styles.buttonSecondary}
-      onPress={() =>
-        router.push({
-          pathname: '/draw',
-          params: {
-            sceneId: scene.id,
-            drawingAssetId: firstDrawingAsset.id,
-          },
-        })
-      }
+      onPress={() => openDrawingPad(firstDrawingAsset.id)}
     >
-      <Text>Continue editing drawing ♻️</Text>
+      <Text style={styles.buttonSecondaryText}>Continue editing first drawing ♻️</Text>
     </Pressable>
   )}
 </View>
 
 <View style={styles.section}>
-  <Text style={styles.sectionTitle}>Audio</Text>
-  <Text style={styles.sectionText}>
-    Add one audio fragment or record a voice note for this scene.
-  </Text>
+  <SectionHeader
+    title="Audio"
+    info="Add one audio file or voice note for this scene. Replacing audio keeps the scene simple for play mode and export."
+  />
 
   <Pressable style={styles.buttonSecondary} onPress={pickAudio}>
-    <Text>{audioAsset ? 'Replace audio file' : 'Choose audio file'}</Text>
+    <Text style={styles.buttonSecondaryText}>{audioAsset ? 'Replace audio file' : 'Choose audio file'}</Text>
   </Pressable>
 
   <Pressable
@@ -563,7 +622,7 @@ const pickAudio = async () => {
           })
         }
       >
-        <Text>Cancel</Text>
+        <Text style={styles.buttonSecondaryText}>Cancel</Text>
       </Pressable>
     </ScrollView>
   );
@@ -572,210 +631,275 @@ const pickAudio = async () => {
 const styles = StyleSheet.create({
   container: {
     padding: 24,
+    paddingTop: 52,
     paddingBottom: 80,
-    backgroundColor: '#fff',
+    backgroundColor: '#F7F1E1',
+  },
+  backButton: {
+    alignSelf: 'flex-start',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#D8CCAA',
+    backgroundColor: '#FFFCF2',
+    marginBottom: 18,
+  },
+  backButtonText: {
+    color: '#3D3528',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  heroCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    backgroundColor: '#F5EFD9',
+    borderWidth: 2,
+    borderColor: '#C9B46F',
+    borderRadius: 28,
+    padding: 18,
+    marginBottom: 18,
+  },
+  heroIconTile: {
+    width: 64,
+    height: 64,
+    borderRadius: 22,
+    backgroundColor: '#E9F2DD',
+    borderWidth: 2,
+    borderColor: '#6E9358',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  heroIcon: {
+    fontSize: 30,
   },
   heading: {
-    fontSize: 24,
-    marginBottom: 8,
+    fontSize: 30,
+    lineHeight: 36,
+    fontWeight: '900',
+    color: '#247322',
   },
   sceneContext: {
-    color: '#666',
-    marginBottom: 20,
+    color: '#665D4E',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '700',
+    marginTop: 4,
   },
   section: {
-    borderWidth: 1,
-    borderColor: '#eee',
-    borderRadius: 12,
-    padding: 14,
+    borderWidth: 2,
+    borderColor: '#6E9358',
+    borderRadius: 24,
+    padding: 16,
     marginBottom: 18,
-    backgroundColor: '#fafafa',
+    backgroundColor: '#FFFCF2',
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    marginBottom: 12,
   },
   sectionTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 6,
+    fontSize: 22,
+    fontWeight: '900',
+    flex: 1,
+    color: '#2A251D',
   },
-  sectionText: {
-    color: '#666',
-    marginBottom: 12,
+  infoButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#BFD5B1',
+    backgroundColor: '#E9F2DD',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  infoButtonText: {
+    fontWeight: '900',
+    color: '#4F6F52',
+  },
+  canvasHint: {
+    color: '#665D4E',
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 10,
+    fontWeight: '600',
   },
   canvas: {
     height: 260,
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 12,
+    borderColor: '#D8CCAA',
+    borderRadius: 18,
     overflow: 'hidden',
     marginBottom: 16,
-    backgroundColor: '#fff',
+    backgroundColor: '#FFFDF7',
   },
   empty: {
-    color: '#888',
+    color: '#8C806F',
     marginBottom: 12,
+    fontWeight: '700',
   },
   buttonSecondary: {
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 16,
     alignItems: 'center',
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: '#ccc',
-    backgroundColor: '#fff',
+    borderColor: '#D8CCAA',
+    backgroundColor: '#FFFDF7',
+  },
+  buttonSecondaryText: {
+    color: '#3D3528',
+    fontWeight: '900',
   },
   button: {
-    backgroundColor: '#222',
-    paddingVertical: 14,
-    borderRadius: 8,
+    backgroundColor: '#247322',
+    paddingVertical: 16,
+    borderRadius: 18,
     marginTop: 8,
     marginBottom: 12,
     alignItems: 'center',
   },
   buttonText: {
     color: '#fff',
-    fontSize: 16,
+    fontSize: 17,
+    fontWeight: '900',
   },
   selectedAssetPanel: {
-  borderWidth: 1,
-  borderColor: '#eee',
-  borderRadius: 12,
-  padding: 12,
-  marginBottom: 16,
-  backgroundColor: '#fafafa',
-},
-
-selectedAssetTitle: {
-  fontSize: 14,
-  fontWeight: '700',
-  marginBottom: 10,
-},
-
-sizeButtonRow: {
-  flexDirection: 'row',
-  gap: 8,
-  marginBottom: 12,
-},
-
-sizeButton: {
-  flex: 1,
-  paddingVertical: 10,
-  borderRadius: 10,
-  borderWidth: 1,
-  borderColor: '#ccc',
-  backgroundColor: '#fff',
-  alignItems: 'center',
-},
-
-sizeButtonText: {
-  fontSize: 13,
-  fontWeight: '700',
-  color: '#333',
-},
-
-selectedAssetSubtitle: {
-  fontSize: 13,
-  fontWeight: '700',
-  color: '#555',
-  marginBottom: 8,
-},
-
-layerButtonRow: {
-  flexDirection: 'row',
-  gap: 8,
-  marginBottom: 12,
-},
-
-layerButton: {
-  flex: 1,
-  paddingVertical: 10,
-  borderRadius: 10,
-  borderWidth: 1,
-  borderColor: '#ccc',
-  backgroundColor: '#fff',
-  alignItems: 'center',
-},
-
-layerButtonText: {
-  fontSize: 13,
-  fontWeight: '700',
-  color: '#333',
-},
-
-
-recordButton: {
-  backgroundColor: '#222',
-  paddingVertical: 12,
-  paddingHorizontal: 12,
-  borderRadius: 10,
-  alignItems: 'center',
-  marginBottom: 12,
-},
-
-recordButtonActive: {
-  backgroundColor: '#8b1e1e',
-},
-
-recordButtonText: {
-  color: '#fff',
-  fontWeight: '700',
-},
-
-audioInfoBox: {
-  borderWidth: 1,
-  borderColor: '#eee',
-  borderRadius: 12,
-  padding: 12,
-  backgroundColor: '#fff',
-},
-
-audioInfoTitle: {
-  fontSize: 14,
-  fontWeight: '700',
-  marginBottom: 6,
-},
-
-audioInfoText: {
-  color: '#666',
-  marginBottom: 12,
-},
-
-audioActionRow: {
-  flexDirection: 'row',
-  gap: 8,
-},
-
-listenButton: {
-  flex: 1,
-  backgroundColor: '#222',
-  paddingVertical: 10,
-  paddingHorizontal: 12,
-  borderRadius: 10,
-  alignItems: 'center',
-},
-
-listenButtonActive: {
-  backgroundColor: '#8b1e1e',
-},
-
-listenButtonText: {
-  color: '#fff',
-  fontWeight: '700',
-},
-
-removeAudioButton: {
-  flex: 1,
-  paddingVertical: 10,
-  paddingHorizontal: 12,
-  borderRadius: 10,
-  borderWidth: 1,
-  borderColor: '#ccc',
-  backgroundColor: '#fff',
-  alignItems: 'center',
-},
-
-removeAudioButtonText: {
-  color: '#333',
-  fontWeight: '700',
-}
+    borderWidth: 1,
+    borderColor: '#D8CCAA',
+    borderRadius: 18,
+    padding: 14,
+    marginBottom: 16,
+    backgroundColor: '#FFFDF7',
+  },
+  selectedAssetTitle: {
+    fontSize: 16,
+    fontWeight: '900',
+    marginBottom: 4,
+    color: '#2A251D',
+  },
+  selectedAssetMeta: {
+    color: '#665D4E',
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 10,
+    fontWeight: '600',
+  },
+  sizeButtonRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  sizeButton: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#6E9358',
+    backgroundColor: '#FFFCF2',
+    alignItems: 'center',
+  },
+  sizeButtonText: {
+    fontSize: 13,
+    fontWeight: '900',
+    color: '#247322',
+  },
+  selectedAssetSubtitle: {
+    fontSize: 13,
+    fontWeight: '900',
+    color: '#3D3528',
+    marginBottom: 8,
+  },
+  layerButtonRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  layerButton: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#6E9358',
+    backgroundColor: '#FFFCF2',
+    alignItems: 'center',
+  },
+  layerButtonText: {
+    fontSize: 13,
+    fontWeight: '900',
+    color: '#247322',
+  },
+  recordButton: {
+    backgroundColor: '#247322',
+    paddingVertical: 13,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  recordButtonActive: {
+    backgroundColor: '#9B3A2F',
+  },
+  recordButtonText: {
+    color: '#fff',
+    fontWeight: '900',
+  },
+  audioInfoBox: {
+    borderWidth: 1,
+    borderColor: '#D8CCAA',
+    borderRadius: 18,
+    padding: 14,
+    backgroundColor: '#FFFDF7',
+  },
+  audioInfoTitle: {
+    fontSize: 15,
+    fontWeight: '900',
+    marginBottom: 6,
+    color: '#2A251D',
+  },
+  audioInfoText: {
+    color: '#665D4E',
+    marginBottom: 12,
+    fontWeight: '600',
+  },
+  audioActionRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  listenButton: {
+    flex: 1,
+    backgroundColor: '#247322',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    alignItems: 'center',
+  },
+  listenButtonActive: {
+    backgroundColor: '#9B3A2F',
+  },
+  listenButtonText: {
+    color: '#fff',
+    fontWeight: '900',
+  },
+  removeAudioButton: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#D8CCAA',
+    backgroundColor: '#FFFCF2',
+    alignItems: 'center',
+  },
+  removeAudioButtonText: {
+    color: '#3D3528',
+    fontWeight: '900',
+  }
 
 });

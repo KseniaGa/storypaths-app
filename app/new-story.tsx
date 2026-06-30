@@ -1,11 +1,43 @@
-import { View, Text, TextInput, StyleSheet, Pressable } from 'react-native';
+import { View, Text, TextInput, StyleSheet, Pressable, ScrollView, Alert } from 'react-native';
 import { useState } from 'react';
 import { router } from 'expo-router';
 import { useStoryStore } from '../store/storyStore';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 
 export default function NewStoryScreen() {
   const [title, setTitle] = useState('');
   const createStory = useStoryStore((state) => state.createStory);
+  const importStory = useStoryStore((state) => state.importStory);
+
+  const handleImportJson = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'application/json',
+        copyToCacheDirectory: true,
+      });
+
+      if (result.canceled) return;
+
+      const file = result.assets[0];
+      if (!file?.uri) return;
+
+      const jsonString = await FileSystem.readAsStringAsync(file.uri);
+      const parsed = JSON.parse(jsonString);
+
+      if (!parsed.id || !parsed.title || !Array.isArray(parsed.scenes)) {
+        Alert.alert('Import failed', 'This file does not look like a valid Branch Beetle story JSON.');
+        return;
+      }
+
+      importStory(parsed);
+      Alert.alert('Import successful', `"${parsed.title}" was imported.`);
+      router.push('/story');
+    } catch (error) {
+      console.error('Import error:', error);
+      Alert.alert('Import failed', 'Could not read or import the JSON file.');
+    }
+  };
 
   const handleCreateStory = () => {
     createStory(title.trim() || 'Untitled story', 'fictional');
@@ -13,30 +45,47 @@ export default function NewStoryScreen() {
   };
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.heading}>Start a new story 🌱</Text>
+    <ScrollView contentContainerStyle={styles.container}>
+      <Pressable style={styles.backButton} onPress={() => router.back()}>
+        <Text style={styles.backButtonText}>← Home</Text>
+      </Pressable>
 
-      <Text style={styles.intro}>
-        Give your story a name. You can start simple and change things later.
-      </Text>
+      <View style={styles.heroCard}>
+        <View style={styles.heroIconTile}>
+          <Text style={styles.heroIcon}>🌱</Text>
+        </View>
 
-      <Text style={styles.label}>Story title</Text>
+        <View style={styles.heroTextArea}>
+          <Text style={styles.heading}>Start a new story</Text>
+          <Text style={styles.intro}>
+            Give your story a name. You can start simple and change things later.
+          </Text>
+        </View>
+      </View>
 
-      <TextInput
-        style={styles.input}
-        placeholder="My story"
-        value={title}
-        onChangeText={setTitle}
-      />
+      <View style={styles.sectionCard}>
+        <Text style={styles.label}>Story title</Text>
 
-      <Text style={styles.preview}>Preview: {title.trim() || 'Untitled story'}</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="My story"
+          placeholderTextColor="#8C806F"
+          value={title}
+          onChangeText={setTitle}
+        />
+
+        <View style={styles.previewTile}>
+          <Text style={styles.previewIcon}>🪲</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.previewLabel}>Preview</Text>
+            <Text style={styles.previewTitle}>{title.trim() || 'Untitled story'}</Text>
+          </View>
+        </View>
+      </View>
 
       <View style={styles.reassuranceBox}>
-        <Text style={styles.reassuranceTitle}>You choose how personal it feels</Text>
-
         <Text style={styles.reassuranceText}>
-          Your story can be based on real experience, told through symbols, or completely
-          fictional. 
+          Your story can be based on real experience, told through symbols, or completely fictional.
         </Text>
       </View>
 
@@ -46,88 +95,181 @@ export default function NewStoryScreen() {
 
       <Pressable
         style={styles.secondaryButton}
-        onPress={() => {
-          
-          router.push('/templates')
-        }}
+        onPress={() => router.push('/templates')}
       >
         <Text style={styles.secondaryButtonText}>Choose a template</Text>
       </Pressable>
-    </View>
+
+      <Pressable
+        style={styles.secondaryButton}
+        onPress={handleImportJson}
+      >
+        <Text style={styles.secondaryButtonText}>Import story</Text>
+      </Pressable>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
+    flexGrow: 1,
     padding: 24,
+    paddingTop: 52,
+    paddingBottom: 80,
+    backgroundColor: '#F7F1E1',
+  },
+  backButton: {
+    alignSelf: 'flex-start',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#D8CCAA',
+    backgroundColor: '#FFFCF2',
+    marginBottom: 18,
+  },
+  backButtonText: {
+    color: '#3D3528',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  heroCard: {
+    flexDirection: 'row',
+    gap: 16,
+    alignItems: 'center',
+    backgroundColor: '#F5EFD9',
+    borderWidth: 2,
+    borderColor: '#C9B46F',
+    borderRadius: 28,
+    padding: 18,
+    marginBottom: 22,
+  },
+  heroIconTile: {
+    width: 74,
+    height: 74,
+    borderRadius: 24,
+    backgroundColor: '#E9F2DD',
+    borderWidth: 2,
+    borderColor: '#6E9358',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  heroIcon: {
+    fontSize: 36,
+  },
+  heroTextArea: {
+    flex: 1,
   },
   heading: {
-    fontSize: 26,
-    fontWeight: '700',
-    marginBottom: 12,
-  },
-  intro: {
-    fontSize: 15,
-    color: '#555',
-    lineHeight: 21,
-    marginBottom: 24,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 12,
-    fontSize: 16,
-  },
-  preview: {
-    color: '#666',
-    marginBottom: 20,
-  },
-  reassuranceBox: {
-    backgroundColor: '#F7F2FF',
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 24,
-  },
-  reassuranceTitle: {
-    fontSize: 15,
-    fontWeight: '700',
+    fontSize: 30,
+    fontWeight: '900',
+    color: '#247322',
     marginBottom: 6,
   },
+  intro: {
+    fontSize: 16,
+    color: '#665D4E',
+    lineHeight: 23,
+    fontWeight: '700',
+  },
+  sectionCard: {
+    backgroundColor: '#FFFCF2',
+    borderRadius: 24,
+    padding: 18,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#D8CCAA',
+  },
+  label: {
+    fontSize: 15,
+    fontWeight: '900',
+    color: '#2A251D',
+    marginBottom: 10,
+  },
+  input: {
+    borderWidth: 2,
+    borderColor: '#6E9358',
+    borderRadius: 18,
+    padding: 14,
+    marginBottom: 14,
+    fontSize: 18,
+    color: '#2A251D',
+    backgroundColor: '#FFFDF7',
+    fontWeight: '700',
+  },
+  previewTile: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 12,
+    borderRadius: 18,
+    backgroundColor: '#EEF7E4',
+  },
+  previewIcon: {
+    fontSize: 30,
+  },
+  previewLabel: {
+    color: '#6F675A',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  previewTitle: {
+    color: '#2A251D',
+    fontSize: 17,
+    fontWeight: '900',
+  },
+  reassuranceBox: {
+    backgroundColor: '#FFFCF2',
+    borderWidth: 1,
+    borderColor: '#D8CCAA',
+    borderRadius: 24,
+    padding: 18,
+    marginBottom: 22,
+  },
+  reassuranceHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  reassuranceIcon: {
+    fontSize: 22,
+  },
+  reassuranceTitle: {
+    fontSize: 17,
+    fontWeight: '900',
+    color: '#2A251D',
+  },
   reassuranceText: {
-    fontSize: 14,
-    color: '#555',
-    lineHeight: 20,
+    fontSize: 15,
+    color: '#665D4E',
+    lineHeight: 22,
+    fontWeight: '600',
   },
   button: {
-    backgroundColor: '#222',
-    paddingVertical: 14,
-    borderRadius: 10,
+    backgroundColor: '#247322',
+    paddingVertical: 17,
+    borderRadius: 18,
     alignItems: 'center',
     marginBottom: 12,
   },
   buttonText: {
     color: '#fff',
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 18,
+    fontWeight: '900',
   },
   secondaryButton: {
     borderWidth: 1,
-    borderColor: '#ccc',
-    paddingVertical: 14,
-    borderRadius: 10,
+    borderColor: '#D8CCAA',
+    backgroundColor: '#FFFCF2',
+    paddingVertical: 16,
+    borderRadius: 18,
     alignItems: 'center',
+    marginBottom: 12,
   },
   secondaryButtonText: {
-    color: '#222',
-    fontSize: 16,
-    fontWeight: '600',
+    color: '#3D3528',
+    fontSize: 17,
+    fontWeight: '900',
   },
 });

@@ -1,8 +1,8 @@
-import { View, Text, StyleSheet, Pressable, ScrollView, TextInput } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ScrollView, TextInput, Modal } from 'react-native';
 import { router, Stack } from 'expo-router';
 import { useStoryStore } from '../store/storyStore';
 import { Alert } from 'react-native';
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
@@ -11,6 +11,7 @@ import * as DocumentPicker from 'expo-document-picker';
 export default function StoryScreen() {
     const currentStory = useStoryStore((state) => state.getCurrentStory());
     const deleteScene = useStoryStore((state) => state.deleteScene);
+    const updateScene = useStoryStore((state) => state.updateScene);
     const toggleSceneDone = useStoryStore((state) => state.toggleSceneDone);
     const scenes = currentStory?.scenes || [];
     const title = currentStory?.title || 'Untitled story';
@@ -22,6 +23,8 @@ export default function StoryScreen() {
     const setBackgroundMusic = useStoryStore((state) => state.setBackgroundMusic);
     const removeBackgroundMusic = useStoryStore((state) => state.removeBackgroundMusic);
     const backgroundMusic = currentStory?.backgroundMusic;
+    const renameStory = useStoryStore((state) => state.renameStory);
+    const [sceneMenuTarget, setSceneMenuTarget] = useState<{ scene: any; index: number } | null>(null);
     
 
     const toggleShowSceneTitlesInPlay = useStoryStore(
@@ -116,6 +119,27 @@ const openShareOptions = () => {
 };
 
 const showSceneTitlesInPlay = currentStory?.showSceneTitlesInPlay ?? true;
+
+const [isEditingTitle, setIsEditingTitle] = useState(false);
+const [draftStoryTitle, setDraftStoryTitle] = useState(title);
+
+useEffect(() => {
+  setDraftStoryTitle(title);
+}, [title]);
+
+const saveStoryTitle = () => {
+  if (!currentStory) return;
+
+  const trimmedTitle = draftStoryTitle.trim();
+
+  if (!trimmedTitle) {
+    Alert.alert('Story needs a name', 'Please add a story name before saving.');
+    return;
+  }
+
+  renameStory(currentStory.id, trimmedTitle);
+  setIsEditingTitle(false);
+};
 
 const [expandedSceneId, setExpandedSceneId] = useState<string | null>(null);
 const [expandedDetailsSceneId, setExpandedDetailsSceneId] = useState<string | null>(null);
@@ -791,1492 +815,1614 @@ const chooseBackgroundMusic = async () => {
 };
 
 
+
+const storyIcon = (currentStory as any)?.icon || '🪲';
+
+const addScene = () => {
+  router.push({
+    pathname: '/scene-editor',
+    params: { storyTitle: title },
+  });
+};
+
+const openSceneEditor = (sceneId: string) => {
+  router.push({
+    pathname: '/scene-editor',
+    params: { sceneId },
+  });
+};
+
+const previewScene = (sceneId: string) => {
+  router.push({
+    pathname: '/play',
+    params: {
+      startSceneId: sceneId,
+      preview: 'true',
+    },
+  });
+};
+
+const setSceneAsStart = (sceneId: string) => {
+  const sceneIndex = scenes.findIndex((scene) => scene.id === sceneId);
+
+  if (sceneIndex <= 0) {
+    Alert.alert(
+      'Already the start scene',
+      'This scene is already the first scene players will see.'
+    );
+    return;
+  }
+
+  const nextScenes = [
+    scenes[sceneIndex],
+    ...scenes.slice(0, sceneIndex),
+    ...scenes.slice(sceneIndex + 1),
+  ];
+
+  nextScenes.forEach((scene, index) => {
+    updateScene(index, scene);
+  });
+
+  Alert.alert(
+    'Start scene updated',
+    `"${scenes[sceneIndex].title || 'Untitled scene'}" is now the first scene players will see.`
+  );
+};
+
+const confirmDeleteScene = (scene: any) => {
+  Alert.alert(
+    'Delete scene?',
+    `This will delete "${scene.title || 'Untitled scene'}" and remove paths pointing to it.`,
+    [
+      {
+        text: 'Cancel',
+        style: 'cancel',
+      },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => deleteScene(scene.id),
+      },
+    ]
+  );
+};
+
+const openSceneMenu = (scene: any, index: number) => {
+  setSceneMenuTarget({ scene, index });
+};
+
+const closeSceneMenu = () => {
+  setSceneMenuTarget(null);
+};
+
+const handleSetSceneAsStart = () => {
+  if (!sceneMenuTarget) return;
+  if (sceneMenuTarget.index !== 0) {
+    setSceneAsStart(sceneMenuTarget.scene.id);
+  }
+  closeSceneMenu();
+};
+
+const handleToggleSceneDone = () => {
+  if (!sceneMenuTarget) return;
+  toggleSceneDone(sceneMenuTarget.scene.id);
+  closeSceneMenu();
+};
+
+const handleDeleteSceneFromMenu = () => {
+  if (!sceneMenuTarget) return;
+  const sceneToDelete = sceneMenuTarget.scene;
+  closeSceneMenu();
+  confirmDeleteScene(sceneToDelete);
+};
+
+const getSceneStatus = (scene: any, index: number) => {
+  if (index === 0) {
+    return { icon: '', label: 'Start' };
+  }
+
+  if (scene.choices.length === 0) {
+    return { icon: '', label: 'Ending' };
+  }
+
+  return { icon: '', label: 'Branch' };
+};
+
+const getSceneMeta = (scene: any) => {
+  const parts: string[] = [];
+
+  if (scene.choices.length > 0) {
+    parts.push(
+      `${scene.choices.length} ${scene.choices.length === 1 ? 'choice' : 'choices'}`
+    );
+  }
+
+  const imageCount = getSceneImageCount(scene);
+  const drawingCount = getSceneDrawingCount(scene);
+
+  if (imageCount > 0) {
+    parts.push(`🖼️ ${imageCount}`);
+  }
+
+  if (drawingCount > 0) {
+    parts.push(`✏️ ${drawingCount}`);
+  }
+
+  if (sceneHasAudio(scene)) {
+    parts.push('🎧 audio');
+  }
+
+  return parts.join(' · ');
+};
+
+const storyValuesStatus =
+  storyValues.length > 0
+    ? `${storyValues.length} ${storyValues.length === 1 ? 'value' : 'values'}`
+    : 'Optional';
+
+const musicStatus = backgroundMusic
+  ? backgroundMusic.name || 'Music added'
+  : 'No music yet';
+
+
 return (
   <>
     <Stack.Screen options={{ headerShown: false }} />
 
     <ScrollView
-  ref={scrollRef}
-  style={{ flex: 1 }}
-  contentContainerStyle={styles.container}
->
-
-
-<Pressable
-  style={styles.homePill}
-  onPress={() => router.replace('/')}
->
-  <Text style={styles.homePillText}>← Home</Text>
-</Pressable>
-
-<Text style={styles.title}>{title || 'Untitled story'}</Text>
-
-<Pressable
-  style={styles.compactStatusButton}
-  onPress={() => setIsStatusExpanded(!isStatusExpanded)}
->
-  <Text style={styles.compactStatusText}>
-    {scenes.length} {scenes.length === 1 ? 'scene' : 'scenes'}{' '}
-    {missingTargetCount > 0
-      ? ` · ⚠️ ${missingTargetCount} missing ${missingTargetCount === 1 ? 'path' : 'paths'}`
-      : ''}
-    {' '}
-    {isStatusExpanded ? '⌃' : '⌄'}
-  </Text>
-</Pressable>
-
-{isStatusExpanded && (
-  <View style={styles.expandedStatusBox}>
-    <Text style={styles.expandedStatusTitle}>Story status</Text>
-
-    <View style={styles.summaryGrid}>
-      <Text style={styles.summaryChip}>
-        {scenes.length} {scenes.length === 1 ? 'scene' : 'scenes'}
-      </Text>
-
-      <Text style={styles.summaryChip}>
-        {doneSceneCount} done
-      </Text>
-
-      <Text style={styles.summaryChip}>
-        {endingSceneCount} {endingSceneCount === 1 ? 'ending' : 'endings'}
-      </Text>
-
-      <Text
-        style={[
-          styles.summaryChip,
-          missingTargetCount > 0 && styles.summaryChipWarning,
-        ]}
-      >
-        {missingTargetCount} missing {missingTargetCount === 1 ? 'path' : 'paths'}
-      </Text>
-
-      {imageSceneCount > 0 && (
-        <Text style={styles.summaryChip}>🖼️ {imageSceneCount}</Text>
-      )}
-
-      {audioSceneCount > 0 && (
-        <Text style={styles.summaryChip}>🎧 {audioSceneCount}</Text>
-      )}
-
-      {drawingSceneCount > 0 && (
-        <Text style={styles.summaryChip}>✏️ {drawingSceneCount}</Text>
-      )}
-    </View>
-  </View>
-)}
-
-<View style={styles.mainActionStack}>
-  <Pressable
-    style={styles.fullWidthPrimaryButton}
-    onPress={() =>
-      router.push({
-        pathname: '/scene-editor',
-        params: { storyTitle: title },
-      })
-    }
-  >
-    <Text style={styles.primaryActionText}>+ Add scene</Text>
-  </Pressable>
-
-  <Pressable
-    style={styles.fullWidthSecondaryButton}
-    onPress={() => router.push('/play')}
-  >
-    <Text style={styles.secondaryActionText}>▶ Play Story</Text>
-  </Pressable>
-</View>
-
-<View style={styles.backgroundMusicCard}>
-  <View style={styles.titleWithInfo}>
-  <Text style={styles.sectionTitle}>Background music 🎵</Text>
-
-  <Pressable style={styles.infoButton} onPress={showBackgroundMusicInfo}>
-    <Text style={styles.infoButtonText}>ⓘ</Text>
-  </Pressable>
-</View>
-
-  {backgroundMusic ? (
-    <Text style={styles.backgroundMusicFile} numberOfLines={1}>
-      Selected: {backgroundMusic.name || 'Background music'}
-    </Text>
-  ) : (
-    <Text style={styles.backgroundMusicEmpty}>
-      No background music added yet.
-    </Text>
-  )}
-
-  <View style={styles.backgroundMusicButtonRow}>
-    <Pressable
-      style={styles.backgroundMusicButton}
-      onPress={chooseBackgroundMusic}
+      ref={scrollRef}
+      style={{ flex: 1 }}
+      contentContainerStyle={styles.container}
     >
-      <Text style={styles.backgroundMusicButtonText}>
-        {backgroundMusic ? 'Change music' : 'Add music'}
-      </Text>
-    </Pressable>
-
-    {backgroundMusic && (
       <Pressable
-        style={styles.backgroundMusicRemoveButton}
-        onPress={removeBackgroundMusic}
+        style={styles.homePill}
+        onPress={() => router.replace('/')}
       >
-        <Text style={styles.backgroundMusicRemoveText}>Remove</Text>
+        <Text style={styles.homePillText}>← Home</Text>
       </Pressable>
-    )}
-  </View>
+
+      {isEditingTitle ? (
+        <View style={styles.storyTitleEditCard}>
+          <TextInput
+            style={styles.storyTitleInput}
+            value={draftStoryTitle}
+            onChangeText={setDraftStoryTitle}
+            placeholder="Story title"
+            autoCapitalize="sentences"
+            returnKeyType="done"
+            onSubmitEditing={saveStoryTitle}
+          />
+
+          <View style={styles.storyTitleEditRow}>
+            <Pressable
+              style={styles.storyTitleSaveButton}
+              onPress={saveStoryTitle}
+            >
+              <Text style={styles.storyTitleSaveText}>Save name</Text>
+            </Pressable>
+
+            <Pressable
+              style={styles.storyTitleCancelButton}
+              onPress={() => {
+                setDraftStoryTitle(title);
+                setIsEditingTitle(false);
+              }}
+            >
+              <Text style={styles.storyTitleCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : (
+        <View style={styles.storyHeroCard}>
+          <View style={styles.storyHeroTopRow}>
+            <View style={styles.storyIconTile}>
+              <Text style={styles.storyIconText}>{storyIcon}</Text>
+            </View>
+
+            <View style={{ flex: 1 }}>
+              <Text style={styles.heroTitle} numberOfLines={2}>
+                {title || 'Untitled story'}
+              </Text>
+              <Text style={styles.heroSubtitle}>
+                Build and edit your branching story.
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.heroPrimaryRow}>
+            <Pressable
+              style={styles.heroPlayButton}
+              onPress={() => router.push('/play')}
+            >
+              <Text style={styles.heroPlayButtonText}>▶ Play</Text>
+            </Pressable>
+
+            <Pressable
+              style={styles.heroAddButton}
+              onPress={addScene}
+            >
+              <Text style={styles.heroAddButtonText}>+ Add scene</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.heroSecondaryRow}>
+            <Pressable
+              style={styles.heroSecondaryButton}
+              onPress={() => setIsEditingTitle(true)}
+            >
+              <Text style={styles.heroSecondaryButtonText}>✎ Rename</Text>
+            </Pressable>
+
+            <Pressable
+              style={styles.heroSecondaryButton}
+              onPress={openShareOptions}
+            >
+              <Text style={styles.heroSecondaryButtonText}>⇧ Export</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+
+      <View style={styles.storyToolsCard}>
+        <View style={styles.sectionHeaderRowCompact}>
+          <View>
+            <Text style={styles.sectionTitle}>Story tools</Text>
+            <Text style={styles.sectionHelperText}>
+              Optional extras for how the story plays.
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.toolGrid}>
+          <View style={styles.toolTile}>
+            <View style={styles.toolIconCircle}>
+              <Text style={styles.toolIconText}>🎵</Text>
+            </View>
+
+            <View style={{ flex: 1 }}>
+              <View style={styles.toolTitleRow}>
+                <Text style={styles.toolTitle}>Music</Text>
+                <Pressable style={styles.infoButton} onPress={showBackgroundMusicInfo}>
+                  <Text style={styles.infoButtonText}>ⓘ</Text>
+                </Pressable>
+              </View>
+              <Text style={styles.toolStatus} numberOfLines={1}>
+                {musicStatus}
+              </Text>
+            </View>
+
+            <View style={styles.toolButtonRow}>
+              <Pressable
+                style={styles.toolButton}
+                onPress={chooseBackgroundMusic}
+              >
+                <Text style={styles.toolButtonText}>
+                  {backgroundMusic ? 'Change' : 'Add'}
+                </Text>
+              </Pressable>
+
+              {backgroundMusic && (
+                <Pressable
+                  style={styles.toolGhostButton}
+                  onPress={removeBackgroundMusic}
+                >
+                  <Text style={styles.toolGhostButtonText}>Remove</Text>
+                </Pressable>
+              )}
+            </View>
+          </View>
+
+                    <View style={styles.toolTile}>
+            <View style={styles.toolIconCircle}>
+              <Text style={styles.toolIconText}>👁️</Text>
+            </View>
+
+            <View style={{ flex: 1 }}>
+              <Text style={styles.toolTitle}>Scene titles</Text>
+              <Text style={styles.toolStatus}>
+                {showSceneTitlesInPlay ? 'Visible in play' : 'Hidden in play'}
+              </Text>
+            </View>
+
+            <Pressable
+              style={styles.toolButton}
+              onPress={toggleShowSceneTitlesInPlay}
+            >
+              <Text style={styles.toolButtonText}>
+                {showSceneTitlesInPlay ? 'Hide' : 'Show'}
+              </Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.toolTile}>
+            <View style={styles.toolIconCircle}>
+              <Text style={styles.toolIconText}>🫐</Text>
+            </View>
+
+            <View style={{ flex: 1 }}>
+              <View style={styles.toolTitleRow}>
+                <Text style={styles.toolTitle}>Story values</Text>
+                <Pressable style={styles.infoButton} onPress={showStoryValueInfo}>
+                  <Text style={styles.infoButtonText}>ⓘ</Text>
+                </Pressable>
+              </View>
+              <Text style={styles.toolStatus}>{storyValuesStatus}</Text>
+            </View>
+
+            <Pressable
+              style={styles.toolButton}
+              onPress={() => setIsValuesExpanded(!isValuesExpanded)}
+            >
+              <Text style={styles.toolButtonText}>
+                {isValuesExpanded ? 'Hide' : 'Show'}
+              </Text>
+            </Pressable>
+          </View>
+
+
+        </View>
+
+<View style={{ flex: 1 }}>
+
+      {isValuesExpanded && (
+        <View style={styles.valuesExpandedCard}>
+          <Text style={styles.valuesDescription}>
+            Story values are berries or other things the player can collect more or less of.
+          </Text>
+
+          {storyValues.length > 0 ? (
+            storyValues.map((value) => (
+              <View key={value.id} style={styles.valueDefinitionCard}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.valueDefinitionName}>🫐 {value.name}</Text>
+                  <Text style={styles.valueDefinitionMeta}>
+                    Starts at {value.initialValue} · Range {value.minValue}–{value.maxValue} · Changes by {value.step}
+                  </Text>
+                </View>
+
+                <Pressable
+                  style={styles.valueDeleteButton}
+                  onPress={() => {
+                    Alert.alert(
+                      'Delete this?',
+                      `Delete ${value.name}? This will also remove choice rules that use it.`,
+                      [
+                        { text: 'Cancel', style: 'cancel' },
+                        {
+                          text: 'Delete',
+                          style: 'destructive',
+                          onPress: () => deleteStoryValue(value.id),
+                        },
+                      ]
+                    );
+                  }}
+                >
+                  <Text style={styles.valueDeleteText}>✕</Text>
+                </Pressable>
+              </View>
+            ))
+          ) : (
+            <Text style={styles.valuesEmptyText}>
+              No story values yet. You can skip this for simple stories.
+            </Text>
+          )}
+
+          <View style={styles.addValueBox}>
+            <Text style={styles.addValueTitle}>Add story values 🫐</Text>
+
+            <TextInput
+              style={styles.valueTextInput}
+              value={newValueName}
+              onChangeText={setNewValueName}
+              placeholder="Berries"
+              autoCapitalize="words"
+            />
+
+            <View style={styles.valueNumberGrid}>
+              <View style={styles.valueNumberField}>
+                <Text style={styles.valueSmallLabel}>Starts</Text>
+                <TextInput
+                  style={styles.valueNumberInput}
+                  value={newValueInitial}
+                  onChangeText={setNewValueInitial}
+                  keyboardType="numbers-and-punctuation"
+                />
+              </View>
+
+              <View style={styles.valueNumberField}>
+                <Text style={styles.valueSmallLabel}>Min</Text>
+                <TextInput
+                  style={styles.valueNumberInput}
+                  value={newValueMin}
+                  onChangeText={setNewValueMin}
+                  keyboardType="numbers-and-punctuation"
+                />
+              </View>
+
+              <View style={styles.valueNumberField}>
+                <Text style={styles.valueSmallLabel}>Max</Text>
+                <TextInput
+                  style={styles.valueNumberInput}
+                  value={newValueMax}
+                  onChangeText={setNewValueMax}
+                  keyboardType="numbers-and-punctuation"
+                />
+              </View>
+
+              <View style={styles.valueNumberField}>
+                <Text style={styles.valueSmallLabel}>Change by</Text>
+                <TextInput
+                  style={styles.valueNumberInput}
+                  value={newValueStep}
+                  onChangeText={setNewValueStep}
+                  keyboardType="numbers-and-punctuation"
+                />
+              </View>
+            </View>
+
+            <Pressable
+              style={[
+                styles.addValueButton,
+                !newValueName.trim() && styles.addValueButtonDisabled,
+              ]}
+              onPress={handleAddStoryValue}
+            >
+              <Text style={styles.addValueButtonText}>Add story values</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
 </View>
 
 
-<View style={styles.valuesCard}>
-  <View style={styles.valuesHeaderRow}>
-  <View style={styles.valuesTitleArea}>
-    <Text style={styles.sectionTitle}>Optional: story values</Text>
+      </View>
 
-    <Pressable style={styles.infoButton} onPress={showStoryValueInfo}>
-      <Text style={styles.infoButtonText}>ⓘ</Text>
-    </Pressable>
-  </View>
 
-  <Pressable
-    style={styles.valuesToggleButton}
-    onPress={() => setIsValuesExpanded(!isValuesExpanded)}
-  >
-    <Text style={styles.valuesToggleText}>
-      {isValuesExpanded ? 'Hide' : 'Show'}
-    </Text>
-  </Pressable>
-</View>
 
-  {isValuesExpanded && (
-    <>
-      <Text style={styles.valuesDescription}>
-  Story values are things the player can collect more or less of. Use them for things like berries, coins, trust, energy, hope, or suspicion.
-</Text>
-
-  {storyValues.length > 0 ? (
-    storyValues.map((value) => (
-      <View key={value.id} style={styles.valueDefinitionCard}>
+      <View style={styles.sectionHeaderRow}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.valueDefinitionName}>{value.name}</Text>
-          <Text style={styles.valueDefinitionMeta}>
-            Starts at {value.initialValue} · Range {value.minValue}–{value.maxValue} · Changes by {value.step}
+          <Text style={styles.bigSectionTitle}>Story scenes</Text>
+          <Text style={styles.sectionHelperText}>
+            Tap a scene to edit it.
           </Text>
         </View>
 
-        <Pressable
-          style={styles.valueDeleteButton}
-          onPress={() => {
-            Alert.alert(
-              'Delete this?',
-              `Delete ${value.name}? This will also remove choice rules that use it.`,
-              [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Delete',
-                  style: 'destructive',
-                  onPress: () => deleteStoryValue(value.id),
-                },
-              ]
-            );
-          }}
-        >
-          <Text style={styles.valueDeleteText}>✕</Text>
-        </Pressable>
-      </View>
-    ))
-  ) : (
-    <Text style={styles.valuesEmptyText}>
-      Nothing added yet. You can skip this for simple stories.
-    </Text>
-  )}
-
-  <View style={styles.addValueBox}>
-    <Text style={styles.addValueTitle}>Add a story value 🫐</Text>
-
-    <TextInput
-      style={styles.valueTextInput}
-      value={newValueName}
-      onChangeText={setNewValueName}
-      placeholder="Berries"
-      autoCapitalize="words"
-    />
-
-    <View style={styles.valueNumberGrid}>
-      <View style={styles.valueNumberField}>
-        <Text style={styles.valueSmallLabel}>Starts</Text>
-        <TextInput
-          style={styles.valueNumberInput}
-          value={newValueInitial}
-          onChangeText={setNewValueInitial}
-          keyboardType="numbers-and-punctuation"
-        />
+        <Text style={styles.sectionCount}>{scenes.length} total</Text>
       </View>
 
-      <View style={styles.valueNumberField}>
-        <Text style={styles.valueSmallLabel}>Min</Text>
-        <TextInput
-          style={styles.valueNumberInput}
-          value={newValueMin}
-          onChangeText={setNewValueMin}
-          keyboardType="numbers-and-punctuation"
-        />
-      </View>
+      <View style={styles.scenesFrame}>
+        {scenes.length === 0 && (
+          <View style={styles.emptyStateCard}>
+            <Text style={styles.emptyStateTitle}>No scenes yet</Text>
+            <Text style={styles.emptyStateText}>
+              Add your first scene to begin shaping this story.
+            </Text>
 
-      <View style={styles.valueNumberField}>
-        <Text style={styles.valueSmallLabel}>Max</Text>
-        <TextInput
-          style={styles.valueNumberInput}
-          value={newValueMax}
-          onChangeText={setNewValueMax}
-          keyboardType="numbers-and-punctuation"
-        />
-      </View>
+            <Pressable
+              style={styles.emptyStateButton}
+              onPress={addScene}
+            >
+              <Text style={styles.emptyStateButtonText}>+ Add first scene</Text>
+            </Pressable>
+          </View>
+        )}
 
-      <View style={styles.valueNumberField}>
-        <Text style={styles.valueSmallLabel}>Change by</Text>
-        <TextInput
-          style={styles.valueNumberInput}
-          value={newValueStep}
-          onChangeText={setNewValueStep}
-          keyboardType="numbers-and-punctuation"
-        />
-      </View>
+        {scenes.map((scene, index) => {
+          const missingCount = getSceneMissingTargetCount(scene);
+          const sceneStatus = getSceneStatus(scene, index);
+          const sceneMeta = getSceneMeta(scene);
 
-      
-    </View>
+          return (
+            <View
+              key={scene.id}
+              style={[
+                styles.sceneCard,
+                scene.isDone && styles.sceneCardDone,
+              ]}
+            >
+              <Pressable
+                style={styles.scenePressArea}
+                onPress={() => openSceneEditor(scene.id)}
+              >
+                <View style={styles.sceneTopRow}>
+                  <View style={styles.sceneTitleAndMeta}>
+                    <Text style={styles.sceneTitle} numberOfLines={1}>
+                      {scene.title || 'Untitled scene'}
+                    </Text>
 
-    <Pressable
-      style={[
-        styles.addValueButton,
-        !newValueName.trim() && styles.addValueButtonDisabled,
-      ]}
-      onPress={handleAddStoryValue}
-    >
-      <Text style={styles.addValueButtonText}>Add</Text>
-    </Pressable>
-  </View>
+                    <View style={styles.sceneMetaRow}>
+                      <Text
+                        style={[
+                          styles.sceneStatusBadge,
+                          sceneStatus.label === 'Ending' && styles.sceneEndingBadge,
+                        ]}
+                      >
+                        {sceneStatus.label}
+                      </Text>
 
-      </>
-  )}
-</View>
+                      {scene.isDone && (
+                        <Text style={styles.sceneDoneBadge}>✓ Done</Text>
+                      )}
 
+                      {!!sceneMeta && (
+                        <Text style={styles.sceneMetaText} numberOfLines={1}>
+                          {sceneMeta}
+                        </Text>
+                      )}
+                    </View>
 
-<View style={styles.sectionHeaderRow}>
-  <Text style={styles.sectionTitle}>Scenes 🌿</Text>
-  <Text style={styles.sectionCount}>
-    {scenes.length} total
-  </Text>
-</View>
+                    {scene.choices.length === 0 && (
+                      <Text style={styles.endingHint}>This branch currently ends here.</Text>
+                    )}
 
-{scenes.length === 0 && (
-  <View style={styles.emptyStateCard}>
-    <Text style={styles.emptyStateTitle}>No scenes yet</Text>
-    <Text style={styles.emptyStateText}>
-      Add your first scene to begin shaping this story.
-    </Text>
-  </View>
-)}
+                    {missingCount > 0 && (
+                      <Text style={styles.warningChipText}>
+                        ⚠️ {missingCount} {missingCount === 1 ? 'path needs' : 'paths need'} a scene
+                      </Text>
+                    )}
+                  </View>
 
-{scenes.map((scene, index) => (
-  <View
-    key={scene.id}
-    style={[
-      styles.sceneCard,
-      scene.isDone && styles.sceneCardDone,
-    ]}
-  >
-<View style={styles.sceneCardHeader}>
-  <Text style={styles.sceneTitle} numberOfLines={2}>
-    {scene.title || 'Untitled scene'}
-  </Text>
-</View>
+                  <Pressable
+                    style={styles.sceneMoreButton}
+                    onPress={(event: any) => {
+                      event?.stopPropagation?.();
+                      openSceneMenu(scene, index);
+                    }}
+                  >
+                    <Text style={styles.sceneMoreButtonText}>⋯</Text>
+                  </Pressable>
+                </View>
+              </Pressable>
 
-      <Text style={styles.scenePreview} numberOfLines={2}>
-        {scene.text || 'No scene text yet.'}
-      </Text>
+              <View style={styles.sceneActionRowClean}>
+                {scene.choices.length > 0 && (
+                  <Pressable
+                    style={styles.sceneSoftButton}
+                    onPress={() => {
+                      setExpandedSceneId(
+                        expandedSceneId === scene.id ? null : scene.id
+                      );
+                    }}
+                  >
+                    <Text style={styles.sceneSoftButtonText}>
+                      {index === 0
+                        ? expandedSceneId === scene.id
+                          ? 'Hide paths'
+                          : '🧭 Paths'
+                        : expandedSceneId === scene.id
+                          ? '✕'
+                          : '🧭'}
+                    </Text>
+                  </Pressable>
+                )}
 
+                <Pressable
+                  style={styles.previewSceneButton}
+                  onPress={() => previewScene(scene.id)}
+                >
+                  <Text style={styles.previewSceneButtonText}>
+                    {index === 0 ? '▶ Preview' : '▶'}
+                  </Text>
+                </Pressable>
+              </View>
 
-<View style={styles.sceneActionRow}>
-  <Pressable
-    style={styles.editSceneButton}
-    onPress={() =>
-      router.push({
-        pathname: '/scene-editor',
-        params: {
-          sceneId: scene.id,
-        },
-      })
-    }
-  >
-    <Text style={styles.editSceneButtonText}>Edit</Text>
-  </Pressable>
+              {scene.choices.length > 0 && expandedSceneId === scene.id && (
+                <View style={styles.choiceOverviewBox}>
+                  <Text style={styles.choiceOverviewTitle}>Choice → Scene</Text>
 
-  <Pressable
-    style={styles.previewSceneButton}
-    onPress={() => {
-      router.push({
-        pathname: '/play',
-        params: {
-          startSceneId: scene.id,
-          preview: 'true',
-        },
-      });
-    }}
-  >
-    <Text style={styles.previewSceneButtonText}>Play Preview</Text>
-  </Pressable>
-</View>
+                  {scene.choices.map((choice, choiceIndex) => {
+                    const targetScene = choice.targetSceneId
+                      ? scenes.find((target) => target.id === choice.targetSceneId)
+                      : undefined;
 
-<View style={styles.sceneDropdownRow}>
-  {scene.choices.length > 0 && (
-    <Pressable
-      style={styles.linkToggleButton}
-      onPress={() => {
-        setExpandedSceneId(
-          expandedSceneId === scene.id ? null : scene.id
-        );
-      }}
-    >
-      <Text style={styles.linkToggleText}>
-        {expandedSceneId === scene.id ? 'Hide paths ➡️' : 'Show paths ➡️'}
-      </Text>
-    </Pressable>
-  )}
-
-  <Pressable
-    style={styles.linkToggleButton}
-    onPress={() => {
-      setExpandedDetailsSceneId(
-        expandedDetailsSceneId === scene.id ? null : scene.id
-      );
-    }}
-  >
-    <Text style={styles.linkToggleText}>
-      {expandedDetailsSceneId === scene.id ? 'Hide details' : 'Show details'}
-    </Text>
-  </Pressable>
-</View>
-
-{expandedDetailsSceneId === scene.id && (
-  <View style={styles.sceneDetailsBox}>
-    <Text style={styles.sceneDetailsTitle}>Details</Text>
-
-    <Text style={styles.sceneDetailsText}>
-      {getSceneInfoText(scene, index)}
-    </Text>
-
-    {getSceneMissingTargetCount(scene) > 0 && (
-      <Text style={styles.sceneWarningText}>
-        ⚠️ {getSceneMissingTargetCount(scene)} missing{' '}
-        {getSceneMissingTargetCount(scene) === 1 ? 'path' : 'paths'}
-      </Text>
-    )}
-
-    <View style={styles.sceneDetailsActionRow}>
-      <Pressable
-        style={[
-          styles.doneButton,
-          scene.isDone && styles.doneButtonActive,
-        ]}
-        onPress={() => toggleSceneDone(scene.id)}
-      >
-        <Text
-          style={[
-            styles.doneButtonText,
-            scene.isDone && styles.doneButtonTextActive,
-          ]}
-        >
-          {scene.isDone ? 'Mark unfinished' : 'Mark done'}
-        </Text>
-      </Pressable>
-
-      <Pressable
-        onPress={() => {
-          Alert.alert(
-            'Delete scene?',
-            `This will delete "${scene.title || 'Untitled scene'}" and remove paths pointing to it.`,
-            [
-              {
-                text: 'Cancel',
-                style: 'cancel',
-              },
-              {
-                text: 'Delete',
-                style: 'destructive',
-                onPress: () => deleteScene(scene.id),
-              },
-            ]
+                    return (
+                      <Text
+                        key={choice.id || choiceIndex}
+                        style={styles.choiceOverviewText}
+                      >
+                        {choice.label || '(empty choice)'} →{' '}
+                        {targetScene?.title || 'No scene selected'}
+                      </Text>
+                    );
+                  })}
+                </View>
+              )}
+            </View>
           );
+        })}
+      </View>
+
+      <Pressable
+        style={styles.backToTopButton}
+        onPress={() => {
+          scrollRef.current?.scrollTo({ y: 0, animated: true });
         }}
-        style={styles.deleteSceneTextButton}
       >
-        <Text style={styles.deleteSceneText}>Delete scene</Text>
+        <Text style={styles.backToTopButtonText}>↑ Back to top</Text>
       </Pressable>
-    </View>
-  </View>
-)}
-
-{scene.choices.length > 0 && expandedSceneId === scene.id && (
-  <View style={styles.choiceOverviewBox}>
-    <Text style={styles.choiceOverviewTitle}>Choice → Scene </Text>
-
-    {scene.choices.map((choice, choiceIndex) => {
-      const targetScene = choice.targetSceneId
-        ? scenes.find((target) => target.id === choice.targetSceneId)
-        : undefined;
-
-      return (
-        <Text
-          key={choice.id || choiceIndex}
-          style={styles.choiceOverviewText}
-        >
-          {choice.label || '(empty choice)'} →{' '}
-          {targetScene?.title || 'No scene selected'}
-        </Text>
-      );
-    })}
-  </View>
-
-)}
-
-
-    </View>
-
-  
-      ))}
-
-
-
-
-<View style={styles.shareSettingsCard}>
-  <Text style={styles.sectionTitle}>Share and Settings</Text>
-
-  <View style={styles.shareSettingsRow}>
-    <View style={{ flex: 1 }}>
-      <Text style={styles.compactSettingTitle}>
-        Scene titles in play mode
-      </Text>
-
-      <Text style={styles.compactSettingText}>
-        {showSceneTitlesInPlay ? 'Visible' : 'Hidden'}
-      </Text>
-    </View>
-
-    <Pressable
-      style={styles.compactSettingButton}
-      onPress={toggleShowSceneTitlesInPlay}
-    >
-      <Text style={styles.compactSettingButtonText}>
-        {showSceneTitlesInPlay ? 'Hide' : 'Show'}
-      </Text>
-    </Pressable>
-  </View>
-
-  <Pressable
-    style={styles.shareSettingsButton}
-    onPress={openShareOptions}
-  >
-    <Text style={styles.shareSettingsButtonText}>Share / export</Text>
-  </Pressable>
-</View>
-
-<Pressable
-  style={styles.backToTopButton}
-  onPress={() => {
-    scrollRef.current?.scrollTo({ y: 0, animated: true });
-  }}
->
-  <Text style={styles.backToTopButtonText}>↑ Back to top</Text>
-</Pressable>
-
     </ScrollView>
+
+    <Modal
+      visible={!!sceneMenuTarget}
+      transparent
+      animationType="fade"
+      onRequestClose={closeSceneMenu}
+    >
+      <Pressable style={styles.sceneMenuOverlay} onPress={closeSceneMenu}>
+        <Pressable style={styles.sceneMenuCard} onPress={(event: any) => event?.stopPropagation?.()}>
+          <Text style={styles.sceneMenuTitle} numberOfLines={2}>
+            {sceneMenuTarget?.scene?.title || 'Untitled scene'}
+          </Text>
+
+          <Pressable
+            style={[
+              styles.sceneMenuItem,
+              sceneMenuTarget?.index === 0 && styles.sceneMenuItemDisabled,
+            ]}
+            onPress={handleSetSceneAsStart}
+            disabled={sceneMenuTarget?.index === 0}
+          >
+            <Text
+              style={[
+                styles.sceneMenuItemText,
+                sceneMenuTarget?.index === 0 && styles.sceneMenuItemTextDisabled,
+              ]}
+            >
+              {sceneMenuTarget?.index === 0 ? 'Start scene ✓' : 'Set as start scene'}
+            </Text>
+          </Pressable>
+
+          <Pressable style={styles.sceneMenuItem} onPress={handleToggleSceneDone}>
+            <Text style={styles.sceneMenuItemText}>
+              {sceneMenuTarget?.scene?.isDone ? 'Mark unfinished' : 'Mark done'}
+            </Text>
+          </Pressable>
+
+          <Pressable style={styles.sceneMenuItem} onPress={handleDeleteSceneFromMenu}>
+            <Text style={styles.sceneMenuDeleteText}>Delete</Text>
+          </Pressable>
+
+          <Pressable style={styles.sceneMenuCancelButton} onPress={closeSceneMenu}>
+            <Text style={styles.sceneMenuCancelText}>Cancel</Text>
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
   </>
 );
 }
 
 
+
 const styles = StyleSheet.create({
-
   container: {
-  padding: 24,
-  paddingBottom: 100,
-  backgroundColor: '#f6f6f6',
-},
-
-valuesHeaderRow: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  gap: 12,
-},
-
-valuesTitleArea: {
-  flex: 1,
-  flexDirection: 'row',
-  alignItems: 'center',
-  gap: 8,
-  flexWrap: 'wrap',
-},
-
-valuesToggleButton: {
-  flexShrink: 0,
-  paddingVertical: 8,
-  paddingHorizontal: 18,
-  borderRadius: 999,
-  borderWidth: 1,
-  borderColor: '#ddd',
-  backgroundColor: '#fff',
-},
-
-
-sectionTitleWithInfo: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  gap: 8,
-},
-
-titleWithInfo: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  gap: 8,
-  flexWrap: 'wrap',
-  justifyContent: 'space-between',
-},
-
-infoButton: {
-  width: 28,
-  height: 28,
-  borderRadius: 999,
-  alignItems: 'center',
-  justifyContent: 'center',
-  backgroundColor: '#EEF5EA',
-  borderWidth: 1,
-  borderColor: '#D6E5D0',
-},
-
-infoButtonText: {
-  color: '#4F6F52',
-  fontSize: 16,
-  fontWeight: '800',
-},
-
-backgroundMusicCard: {
-  backgroundColor: '#fff',
-  borderRadius: 18,
-  padding: 18,
-  marginBottom: 26,
-  borderWidth: 1,
-  borderColor: '#eee',
-},
-
-backgroundMusicText: {
-  color: '#666',
-  lineHeight: 20,
-  marginTop: 6,
-  marginBottom: 10,
-},
-
-backgroundMusicFile: {
-  color: '#333',
-  fontSize: 14,
-  fontWeight: '700',
-  marginBottom: 12,
-},
-
-backgroundMusicEmpty: {
-  color: '#777',
-  fontSize: 14,
-  marginBottom: 12,
-  fontStyle: 'italic',
-},
-
-backgroundMusicButtonRow: {
-  flexDirection: 'row',
-  gap: 10,
-  flexWrap: 'wrap',
-},
-
-backgroundMusicButton: {
-  backgroundColor: '#222',
-  paddingVertical: 12,
-  paddingHorizontal: 16,
-  borderRadius: 12,
-},
-
-backgroundMusicButtonText: {
-  color: '#fff',
-  fontSize: 15,
-  fontWeight: '700',
-},
-
-backgroundMusicRemoveButton: {
-  backgroundColor: '#fff',
-  paddingVertical: 12,
-  paddingHorizontal: 16,
-  borderRadius: 12,
-  borderWidth: 1,
-  borderColor: '#ddd',
-},
-
-backgroundMusicRemoveText: {
-  color: '#777',
-  fontSize: 15,
-  fontWeight: '700',
-},
-
-sceneDropdownRow: {
-  flexDirection: 'row',
-  flexWrap: 'wrap',
-  gap: 8,
-  marginTop: 12,
-},
-
-sceneDetailsBox: {
-  marginTop: 10,
-  padding: 12,
-  borderRadius: 14,
-  backgroundColor: '#fafafa',
-  borderWidth: 1,
-  borderColor: '#eee',
-},
-
-sceneDetailsTitle: {
-  fontSize: 12,
-  color: '#888',
-  fontWeight: '700',
-  textTransform: 'uppercase',
-  letterSpacing: 0.6,
-  marginBottom: 6,
-},
-
-sceneDetailsText: {
-  color: '#666',
-  fontSize: 14,
-  lineHeight: 20,
-},
-
-sceneDetailsActionRow: {
-  flexDirection: 'row',
-  flexWrap: 'wrap',
-  gap: 10,
-  marginTop: 12,
-  alignItems: 'center',
-},
-
-sceneInfoText: {
-  color: '#777',
-  fontSize: 14,
-  lineHeight: 20,
-  marginTop: 4,
-  marginBottom: 8,
-},
-
-sceneWarningText: {
-  color: '#9a5a00',
-  fontSize: 14,
-  fontWeight: '700',
-  lineHeight: 20,
-  marginBottom: 8,
-},
-
-sceneCardHeader: {
-  marginBottom: 8,
-},
-
-sceneTitle: {
-  fontSize: 21,
-  fontWeight: '700',
-  lineHeight: 27,
-  color: '#111',
-},
-
-sceneActionRow: {
-  flexDirection: 'row',
-  gap: 10,
-  marginTop: 14,
-  flexWrap: 'wrap',
-  alignItems: 'center',
-},
-
-editSceneButton: {
-  paddingVertical: 11,
-  paddingHorizontal: 20,
-  borderRadius: 999,
-  backgroundColor: '#222',
-},
-
-editSceneButtonText: {
-  color: '#fff',
-  fontSize: 15,
-  fontWeight: '700',
-},
-
-previewSceneButton: {
-  paddingVertical: 11,
-  paddingHorizontal: 18,
-  borderRadius: 999,
-  borderWidth: 1,
-  borderColor: '#ccc',
-  backgroundColor: '#fff',
-},
-
-previewSceneButtonText: {
-  color: '#333',
-  fontSize: 15,
-  fontWeight: '700',
-},
-
-sceneSecondaryActionRow: {
-  flexDirection: 'row',
-  gap: 10,
-  marginTop: 10,
-  flexWrap: 'wrap',
-  alignItems: 'center',
-},
-
-doneButton: {
-  paddingVertical: 8,
-  paddingHorizontal: 12,
-  borderRadius: 999,
-  borderWidth: 1,
-  borderColor: '#ccc',
-  alignSelf: 'flex-start',
-  backgroundColor: '#fff',
-},
-
-deleteSceneTextButton: {
-  paddingVertical: 8,
-  paddingHorizontal: 4,
-},
-
-deleteSceneText: {
-  color: '#999',
-  fontSize: 13,
-  fontWeight: '600',
-},
-
-sceneCard: {
-  borderWidth: 1,
-  borderColor: '#ddd',
-  borderRadius: 18,
-  padding: 18,
-  marginBottom: 14,
-  width: '100%',
-  backgroundColor: '#fff',
-},
-
-
-sceneHeaderActions: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  gap: 10,
-  marginLeft: 10,
-},
-
-editScenePill: {
-  paddingVertical: 8,
-  paddingHorizontal: 14,
-  borderRadius: 999,
-  backgroundColor: '#222',
-},
-
-editScenePillText: {
-  color: '#fff',
-  fontWeight: '700',
-  fontSize: 14,
-},
-
-doneBadgeInRow: {
-  color: '#1f8f3a',
-  backgroundColor: '#dcf8e4',
-},
-
-valuesCollapsedText: {
-  color: '#666',
-  lineHeight: 20,
-  marginTop: 6,
-},
-
-valuesToggleText: {
-  color: '#007AFF',
-  fontWeight: '700',
-  fontSize: 14,
-},
-
-valuesCard: {
-  backgroundColor: '#fff',
-  borderRadius: 18,
-  padding: 18,
-  marginBottom: 26,
-  borderWidth: 1,
-  borderColor: '#eee',
-},
-
-valuesDescription: {
-  color: '#666',
-  lineHeight: 20,
-  marginTop: 8,
-  marginBottom: 14,
-},
-
-valuesEmptyText: {
-  color: '#777',
-  lineHeight: 20,
-  marginBottom: 14,
-},
-
-valueDefinitionCard: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  borderWidth: 1,
-  borderColor: '#eee',
-  borderRadius: 14,
-  padding: 14,
-  marginBottom: 10,
-  backgroundColor: '#fafafa',
-},
-
-valueDefinitionName: {
-  fontSize: 16,
-  fontWeight: '700',
-  marginBottom: 4,
-},
-
-valueDefinitionMeta: {
-  color: '#666',
-  lineHeight: 20,
-},
-
-valueDeleteButton: {
-  padding: 8,
-  marginLeft: 8,
-},
-
-valueDeleteText: {
-  color: '#ff3b30',
-  fontSize: 18,
-  fontWeight: '700',
-},
-
-addValueBox: {
-  borderWidth: 1,
-  borderColor: '#e5e5e5',
-  borderStyle: 'dashed',
-  borderRadius: 16,
-  padding: 14,
-  marginTop: 6,
-},
-
-addValueTitle: {
-  fontSize: 15,
-  fontWeight: '700',
-  marginBottom: 10,
-},
-
-valueTextInput: {
-  borderWidth: 1,
-  borderColor: '#ddd',
-  borderRadius: 12,
-  padding: 12,
-  backgroundColor: '#fff',
-  marginBottom: 10,
-},
-
-valueNumberGrid: {
-  flexDirection: 'row',
-  flexWrap: 'wrap',
-  gap: 8,
-  marginBottom: 12,
-},
-
-valueNumberField: {
-  flexGrow: 1,
-  minWidth: '22%',
-},
-
-valueSmallLabel: {
-  color: '#666',
-  fontSize: 12,
-  marginBottom: 4,
-},
-
-valueNumberInput: {
-  borderWidth: 1,
-  borderColor: '#ddd',
-  borderRadius: 10,
-  padding: 10,
-  backgroundColor: '#fff',
-},
-
-addValueButton: {
-  backgroundColor: '#222',
-  borderRadius: 12,
-  paddingVertical: 12,
-  alignItems: 'center',
-},
-
-addValueButtonDisabled: {
-  opacity: 0.5,
-},
-
-addValueButtonText: {
-  color: '#fff',
-  fontWeight: '700',
-},
-
-compactStatusButton: {
-  alignSelf: 'flex-start',
-  marginTop: 10,
-  marginBottom: 18,
-  paddingVertical: 8,
-  paddingHorizontal: 12,
-  borderRadius: 999,
-  backgroundColor: '#fff',
-  borderWidth: 1,
-  borderColor: '#e5e5e5',
-},
-
-compactStatusText: {
-  color: '#555',
-  fontSize: 14,
-  fontWeight: '600',
-},
-
-expandedStatusBox: {
-  backgroundColor: '#fff',
-  borderRadius: 16,
-  padding: 14,
-  marginBottom: 18,
-  borderWidth: 1,
-  borderColor: '#eee',
-},
-
-expandedStatusTitle: {
-  fontSize: 14,
-  fontWeight: '700',
-  marginBottom: 10,
-  color: '#333',
-},
-
-mainActionStack: {
-  gap: 10,
-  marginBottom: 26,
-},
-
-fullWidthPrimaryButton: {
-  backgroundColor: '#222',
-  paddingVertical: 15,
-  paddingHorizontal: 16,
-  borderRadius: 14,
-  alignItems: 'center',
-},
-
-fullWidthSecondaryButton: {
-  backgroundColor: '#fff',
-  paddingVertical: 15,
-  paddingHorizontal: 16,
-  borderRadius: 14,
-  alignItems: 'center',
-  borderWidth: 1,
-  borderColor: '#ccc',
-},
-
-statusGrid: {
-  flexDirection: 'row',
-  flexWrap: 'wrap',
-  gap: 8,
-  marginTop: 18,
-  marginBottom: 18,
-},
-
-summaryChipGood: {
-  color: '#1f7a3a',
-  backgroundColor: '#eaf8ee',
-  borderColor: '#ccefd5',
-},
-
-shareSettingsCard: {
-  backgroundColor: '#fff',
-  borderRadius: 18,
-  padding: 18,
-  marginTop: 8,
-  marginBottom: 16,
-  borderWidth: 1,
-  borderColor: '#eee',
-},
-
-shareSettingsRow: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  gap: 12,
-  paddingVertical: 14,
-  borderBottomWidth: 1,
-  borderBottomColor: '#eee',
-  marginBottom: 14,
-},
-
-shareSettingsButton: {
-  backgroundColor: '#fafafa',
-  paddingVertical: 14,
-  paddingHorizontal: 16,
-  borderRadius: 12,
-  alignItems: 'center',
-  borderWidth: 1,
-  borderColor: '#ddd',
-},
-
-shareSettingsButtonText: {
-  color: '#333',
-  fontSize: 16,
-  fontWeight: '700',
-},
-
-backToTopButton: {
-  alignSelf: 'center',
-  paddingVertical: 10,
-  paddingHorizontal: 16,
-  borderRadius: 999,
-  borderWidth: 1,
-  borderColor: '#ddd',
-  backgroundColor: '#fff',
-  marginBottom: 24,
-},
-
-backToTopButtonText: {
-  color: '#333',
-  fontSize: 14,
-  fontWeight: '700',
-},
-
-homePill: {
-  alignSelf: 'flex-start',
-  paddingVertical: 8,
-  paddingHorizontal: 14,
-  borderRadius: 999,
-  borderWidth: 1,
-  borderColor: '#ddd',
-  marginBottom: 22,
-  backgroundColor: '#fff',
-},
-
-homePillText: {
-  color: '#333',
-  fontSize: 14,
-  fontWeight: '600',
-},
-
-title: {
-  fontSize: 38,
-  fontWeight: '700',
-  lineHeight: 44,
-},
-
-storySubtitle: {
-  color: '#666',
-  fontSize: 16,
-  marginTop: 6,
-  marginBottom: 18,
-},
-
-dashboardCard: {
-  backgroundColor: '#fff',
-  borderRadius: 18,
-  padding: 16,
-  marginBottom: 14,
-  borderWidth: 1,
-  borderColor: '#eee',
-},
-
-actionRow: {
-  flexDirection: 'row',
-  gap: 10,
-  marginBottom: 14,
-},
-
-summaryGrid: {
-  flexDirection: 'row',
-  flexWrap: 'wrap',
-  gap: 8,
-},
-
-playSettingCard: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  backgroundColor: '#fff',
-  borderRadius: 18,
-  padding: 16,
-  marginBottom: 26,
-  borderWidth: 1,
-  borderColor: '#eee',
-  gap: 12,
-},
-
-  subtitle: {
-    color: '#666',
-    marginBottom: 24,
+    paddingTop: 46,
+    paddingHorizontal: 22,
+    paddingBottom: 150,
+    backgroundColor: '#F6F0DF',
+  },
+
+  homePill: {
+    alignSelf: 'flex-start',
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#D9CBA5',
+    marginBottom: 22,
+    backgroundColor: '#FFFDF7',
+  },
+
+  homePillText: {
+    color: '#343026',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+
+  storyHeroCard: {
+    backgroundColor: '#F9F3E4',
+    borderRadius: 30,
+    padding: 20,
+    marginBottom: 20,
+    borderWidth: 2,
+    borderColor: '#C6B36F',
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
+  },
+
+  storyHeroTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    marginBottom: 18,
+  },
+
+  storyIconTile: {
+    width: 78,
+    height: 78,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#E7F0D6',
+    borderWidth: 2,
+    borderColor: '#6B8C51',
+  },
+
+  storyIconText: {
+    fontSize: 40,
+  },
+
+  heroTitle: {
+    fontSize: 31,
+    lineHeight: 35,
+    color: '#287824',
+    fontWeight: '900',
+  },
+
+  heroSubtitle: {
+    color: '#6D6250',
+    fontSize: 17,
+    lineHeight: 23,
+    fontWeight: '700',
+    marginTop: 6,
+  },
+
+  heroPrimaryRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 10,
+  },
+
+  heroPlayButton: {
+    flex: 1,
+    backgroundColor: '#287824',
+    paddingVertical: 15,
+    borderRadius: 18,
+    alignItems: 'center',
+  },
+
+  heroPlayButtonText: {
+    color: '#fff',
+    fontSize: 19,
+    fontWeight: '900',
+  },
+
+  heroAddButton: {
+    flex: 1,
+    backgroundColor: '#E7F0D6',
+    paddingVertical: 15,
+    borderRadius: 18,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#287824',
+  },
+
+  heroAddButtonText: {
+    color: '#287824',
+    fontSize: 17,
+    fontWeight: '900',
+  },
+
+  heroSecondaryRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+
+  heroSecondaryButton: {
+    flex: 1,
+    backgroundColor: '#FFFDF7',
+    paddingVertical: 13,
+    borderRadius: 17,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#D9CBA5',
+  },
+
+  heroSecondaryButtonText: {
+    color: '#463D2F',
+    fontSize: 16,
+    fontWeight: '900',
+  },
+
+  storyTitleEditCard: {
+    backgroundColor: '#FFFDF7',
+    borderWidth: 1,
+    borderColor: '#D9CBA5',
+    borderRadius: 22,
+    padding: 16,
+    marginBottom: 20,
+  },
+
+  storyTitleInput: {
+    borderWidth: 1,
+    borderColor: '#D9CBA5',
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    fontSize: 22,
+    fontWeight: '900',
+    backgroundColor: '#fff',
+  },
+
+  storyTitleEditRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+  },
+
+  storyTitleSaveButton: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: '#287824',
+  },
+
+  storyTitleSaveText: {
+    color: '#fff',
+    fontWeight: '900',
+  },
+
+  storyTitleCancelButton: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#D9CBA5',
+    backgroundColor: '#FFFDF7',
+  },
+
+  storyTitleCancelText: {
+    color: '#333',
+    fontWeight: '900',
+  },
+
+  storyToolsCard: {
+    backgroundColor: '#FFFDF7',
+    borderRadius: 26,
+    padding: 18,
+    marginBottom: 18,
+    borderWidth: 1,
+    borderColor: '#E1D5B8',
+  },
+
+  sectionHeaderRowCompact: {
+    marginBottom: 12,
+  },
+
+  sectionTitle: {
+    fontSize: 22,
+    fontWeight: '900',
+    color: '#2A2720',
+  },
+
+  sectionHelperText: {
+    color: '#6D6250',
+    fontSize: 16,
+    lineHeight: 23,
+    fontWeight: '700',
+    marginTop: 4,
+  },
+
+  toolGrid: {
+    gap: 10,
+  },
+
+  toolTile: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 13,
+    borderRadius: 20,
+    backgroundColor: '#F8F4E8',
+    borderWidth: 1,
+    borderColor: '#DCE9D1',
+  },
+
+  toolIconCircle: {
+    width: 46,
+    height: 46,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#E7F0D6',
+    borderWidth: 1,
+    borderColor: '#C9DCB7',
+  },
+
+  toolIconText: {
+    fontSize: 24,
+  },
+
+  toolTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+
+  toolTitle: {
+    color: '#2A2720',
+    fontSize: 16,
+    fontWeight: '900',
+  },
+
+  toolStatus: {
+    color: '#6D6250',
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+
+  toolButtonRow: {
+    gap: 6,
+    alignItems: 'flex-end',
+  },
+
+  toolButton: {
+    backgroundColor: '#287824',
+    borderRadius: 999,
+    paddingVertical: 8,
+    paddingHorizontal: 13,
+  },
+
+  toolButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+
+  toolGhostButton: {
+    borderRadius: 999,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: '#D9CBA5',
+    backgroundColor: '#FFFDF7',
+  },
+
+  toolGhostButtonText: {
+    color: '#6D6250',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+
+  infoButton: {
+    width: 26,
+    height: 26,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#E7F0D6',
+    borderWidth: 1,
+    borderColor: '#C9DCB7',
+  },
+
+  infoButtonText: {
+    color: '#4F6F52',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+
+  valuesExpandedCard: {
+    backgroundColor: '#FFFDF7',
+    borderRadius: 24,
+    padding: 18,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#E1D5B8',
+  },
+
+  valuesDescription: {
+    color: '#6D6250',
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '700',
+    marginBottom: 14,
+  },
+
+  valuesEmptyText: {
+    color: '#6D6250',
+    lineHeight: 20,
+    marginBottom: 14,
+    fontWeight: '700',
+  },
+
+  valueDefinitionCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#DCE9D1',
+    borderRadius: 18,
+    padding: 14,
+    marginBottom: 10,
+    backgroundColor: '#F8F4E8',
+  },
+
+  valueDefinitionName: {
+    fontSize: 16,
+    fontWeight: '900',
+    color: '#2A2720',
+    marginBottom: 4,
+  },
+
+  valueDefinitionMeta: {
+    color: '#6D6250',
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+
+  valueDeleteButton: {
+    padding: 8,
+    marginLeft: 8,
+  },
+
+  valueDeleteText: {
+    color: '#ff3b30',
+    fontSize: 18,
+    fontWeight: '900',
+  },
+
+  addValueBox: {
+    borderWidth: 1,
+    borderColor: '#D9CBA5',
+    borderStyle: 'dashed',
+    borderRadius: 18,
+    padding: 14,
+    marginTop: 6,
+  },
+
+  addValueTitle: {
+    fontSize: 16,
+    fontWeight: '900',
+    color: '#2A2720',
+    marginBottom: 10,
+  },
+
+  valueTextInput: {
+    borderWidth: 1,
+    borderColor: '#D9CBA5',
+    borderRadius: 14,
+    padding: 12,
+    backgroundColor: '#fff',
+    marginBottom: 10,
+    fontWeight: '700',
+  },
+
+  valueNumberGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 12,
+  },
+
+  valueNumberField: {
+    flexGrow: 1,
+    minWidth: '22%',
+  },
+
+  valueSmallLabel: {
+    color: '#6D6250',
+    fontSize: 12,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+
+  valueNumberInput: {
+    borderWidth: 1,
+    borderColor: '#D9CBA5',
+    borderRadius: 12,
+    padding: 10,
+    backgroundColor: '#fff',
+    fontWeight: '700',
+  },
+
+  addValueButton: {
+    backgroundColor: '#287824',
+    borderRadius: 14,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+
+  addValueButtonDisabled: {
+    opacity: 0.5,
+  },
+
+  addValueButtonText: {
+    color: '#fff',
+    fontWeight: '900',
+  },
+
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    gap: 12,
+    marginTop: 6,
+    marginBottom: 12,
+  },
+
+  bigSectionTitle: {
+    fontSize: 34,
+    lineHeight: 38,
+    fontWeight: '900',
+    color: '#2A2720',
+  },
+
+  sectionCount: {
+    color: '#287824',
+    fontSize: 15,
+    fontWeight: '900',
+    marginBottom: 5,
+  },
+
+  scenesFrame: {
+    borderRadius: 30,
+    borderWidth: 2,
+    borderColor: '#6B8C51',
+    backgroundColor: '#FBF8EE',
+    padding: 10,
+    marginBottom: 22,
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
+  },
+
+  emptyStateCard: {
+    backgroundColor: '#FFFDF7',
+    borderRadius: 22,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: '#DCE9D1',
+  },
+
+  emptyStateTitle: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: '#2A2720',
+    marginBottom: 4,
+  },
+
+  emptyStateText: {
+    color: '#6D6250',
+    lineHeight: 22,
+    fontWeight: '700',
+  },
+
+  emptyStateButton: {
+    marginTop: 14,
+    alignItems: 'center',
+    paddingVertical: 13,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    backgroundColor: '#287824',
+  },
+
+  emptyStateButtonText: {
+    color: '#fff',
+    fontWeight: '900',
+  },
+
+  sceneCard: {
+    borderWidth: 1,
+    borderColor: '#9BB67D',
+    borderRadius: 20,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 9,
+    width: '100%',
+    backgroundColor: '#FFFDF7',
+  },
+
+  sceneCardDone: {
+    borderWidth: 2,
+    borderColor: '#B48A00',
+    backgroundColor: '#FFF8D6',
+  },
+
+  scenePressArea: {
+    width: '100%',
+  },
+
+  sceneIconBox: {
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: '#287824',
+    backgroundColor: '#E7F0D6',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  sceneIconText: {
+    fontSize: 28,
+  },
+
+  sceneContentArea: {
+    flex: 1,
+    minWidth: 0,
+  },
+
+  sceneTopRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+
+  sceneTitleAndMeta: {
+    flex: 1,
+    minWidth: 0,
+  },
+
+  sceneTitleRowClean: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+
+  sceneTitle: {
+    flex: 1,
+    fontSize: 19,
+    fontWeight: '900',
+    lineHeight: 23,
+    color: '#2A2720',
+  },
+
+  sceneMetaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 6,
+  },
+
+  sceneBadgeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 7,
+    marginTop: 7,
+  },
+
+  sceneStatusBadge: {
+    alignSelf: 'flex-start',
+    color: '#287824',
+    backgroundColor: '#E7F0D6',
+    borderColor: '#CFE2BE',
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    fontSize: 12,
+    fontWeight: '900',
+  },
+
+  sceneEndingBadge: {
+    color: '#7A5600',
+    backgroundColor: '#FFF0B8',
+    borderColor: '#E2B84C',
+  },
+
+  sceneMetaText: {
+    flexShrink: 1,
+    color: '#6D6250',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+
+  sceneStartBadge: {
+    alignSelf: 'flex-start',
+    color: '#287824',
+    backgroundColor: '#E7F0D6',
+    borderColor: '#CFE2BE',
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    fontSize: 12,
+    fontWeight: '900',
+  },
+
+  sceneDoneBadge: {
+    alignSelf: 'flex-start',
+    color: '#7A5600',
+    backgroundColor: '#FFF0B8',
+    borderColor: '#E2B84C',
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    fontSize: 12,
+    fontWeight: '900',
+  },
+
+  sceneMoreButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#E7F0D6',
+  },
+
+  sceneMoreButtonText: {
+    color: '#287824',
+    fontSize: 18,
+    fontWeight: '900',
+    marginTop: -4,
+  },
+
+  statusBadge: {
+    color: '#287824',
+    backgroundColor: '#E7F0D6',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    fontSize: 12,
+    fontWeight: '900',
   },
 
 
-scenePreview: {
-  color: '#555',
-  lineHeight: 20,
-  marginBottom: 8,
-},
 
-sceneMeta: {
-  color: '#888',
-  fontSize: 13,
-},
+  scenePreview: {
+    color: '#6D6250',
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '700',
+    marginTop: 2,
+  },
 
-deleteButton: {
-  paddingVertical: 6,
-  paddingHorizontal: 10,
-  borderRadius: 999,
-  borderWidth: 1,
-  borderColor: '#eee',
-  backgroundColor: '#fafafa',
-},
+  warningChipText: {
+    alignSelf: 'flex-start',
+    color: '#9a5a00',
+    backgroundColor: '#FFF3D6',
+    borderColor: '#FFE0A3',
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    fontSize: 12,
+    fontWeight: '900',
+    marginTop: 8,
+  },
 
-deleteText: {
-  color: '#777',
-  fontWeight: '700',
-  fontSize: 13,
-},
+  endingHint: {
+    color: '#287824',
+    fontSize: 13,
+    fontWeight: '800',
+    marginTop: 6,
+  },
 
+  sceneActionRowClean: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 7,
+    marginTop: 6,
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+  },
 
+  sceneSoftButton: {
+    backgroundColor: '#E7F0D6',
+    borderRadius: 999,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    minWidth: 38,
+    alignItems: 'center',
+  },
 
-settingText: {
-  color: '#666',
-  marginBottom: 10,
-},
+  sceneSoftButtonText: {
+    color: '#287824',
+    fontSize: 12,
+    fontWeight: '900',
+  },
 
-sceneCardDone: {
-  borderColor: '#34C759',
-  backgroundColor: '#f4fff6',
-},
+  previewSceneButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#6B8C51',
+    backgroundColor: '#FFFDF7',
+    minWidth: 38,
+    alignItems: 'center',
+  },
 
-sceneTitleRow: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  gap: 8,
-  flex: 1,
-},
+  previewSceneButtonText: {
+    color: '#287824',
+    fontSize: 12,
+    fontWeight: '900',
+  },
 
-doneBadge: {
-  color: '#1f8f3a',
-  fontSize: 12,
-  fontWeight: '700',
-  backgroundColor: '#dcf8e4',
-  paddingHorizontal: 8,
-  paddingVertical: 3,
-  borderRadius: 999,
-},
+  sceneDetailsBox: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 16,
+    backgroundColor: '#F8F4E8',
+    borderWidth: 1,
+    borderColor: '#D9CBA5',
+  },
 
+  sceneDetailsTitle: {
+    fontSize: 12,
+    color: '#6D6250',
+    fontWeight: '900',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    marginBottom: 6,
+  },
 
-doneButtonActive: {
-  borderColor: '#34C759',
-  backgroundColor: '#e8f8ed',
-},
+  sceneDetailsText: {
+    color: '#6D6250',
+    fontSize: 14,
+    fontWeight: '700',
+    lineHeight: 20,
+  },
 
-doneButtonText: {
-  color: '#444',
-  fontSize: 13,
-  fontWeight: '600',
-},
+  sceneWarningText: {
+    color: '#9a5a00',
+    fontSize: 14,
+    fontWeight: '900',
+    lineHeight: 20,
+    marginTop: 6,
+  },
 
-doneButtonTextActive: {
-  color: '#1f8f3a',
-},
+  sceneDetailsActionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 12,
+    alignItems: 'center',
+  },
 
-choiceOverviewBox: {
-  marginTop: 10,
-  paddingTop: 10,
-  borderTopWidth: 1,
-  borderTopColor: '#eee',
-},
+  doneButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#D9CBA5',
+    alignSelf: 'flex-start',
+    backgroundColor: '#FFFDF7',
+  },
 
-choiceOverviewTitle: {
-  fontSize: 12,
-  color: '#888',
-  fontWeight: '700',
-  textTransform: 'uppercase',
-  letterSpacing: 0.6,
-  marginBottom: 6,
-},
+  doneButtonActive: {
+    borderColor: '#287824',
+    backgroundColor: '#E7F0D6',
+  },
 
-choiceOverviewText: {
-  color: '#555',
-  fontSize: 13,
-  lineHeight: 20,
-},
+  doneButtonText: {
+    color: '#463D2F',
+    fontSize: 12,
+    fontWeight: '900',
+  },
 
-headerSection: {
-  marginTop: 10,
-  marginBottom: 18,
-},
+  doneButtonTextActive: {
+    color: '#287824',
+  },
 
-homeButton: {
-  alignSelf: 'flex-start',
-  paddingVertical: 8,
-  paddingHorizontal: 12,
-  borderRadius: 10,
-  borderWidth: 1,
-  borderColor: '#ddd',
-  marginBottom: 10,
-  backgroundColor: '#fff',
-},
+  deleteSceneTextButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+  },
 
-homeButtonText: {
-  color: '#333',
-  fontSize: 15,
-  fontWeight: '600',
-},
+  deleteSceneText: {
+    color: '#9C4B3C',
+    fontSize: 12,
+    fontWeight: '900',
+  },
 
-summaryBox: {
-  borderWidth: 1,
-  borderColor: '#eee',
-  borderRadius: 12,
-  padding: 14,
-  marginBottom: 18,
-  backgroundColor: '#fafafa',
-},
+  choiceOverviewBox: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 16,
+    backgroundColor: '#F8F4E8',
+    borderWidth: 1,
+    borderColor: '#D9CBA5',
+  },
 
-summaryChip: {
-  fontSize: 13,
-  fontWeight: '600',
-  color: '#555',
-  backgroundColor: '#fff',
-  borderWidth: 1,
-  borderColor: '#e5e5e5',
-  paddingHorizontal: 10,
-  paddingVertical: 6,
-  borderRadius: 999,
-},
+  choiceOverviewTitle: {
+    fontSize: 12,
+    color: '#6D6250',
+    fontWeight: '900',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    marginBottom: 6,
+  },
 
-summaryChipWarning: {
-  color: '#9a5a00',
-  backgroundColor: '#fff3d6',
-  borderColor: '#ffe0a3',
-},
+  choiceOverviewText: {
+    color: '#3E6D28',
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: '800',
+  },
 
-badgeRow: {
-  flexDirection: 'row',
-  flexWrap: 'wrap',
-  gap: 8,
-  marginBottom: 8,
-},
+  sceneMenuOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.28)',
+    justifyContent: 'flex-end',
+    padding: 22,
+  },
 
-badge: {
-  fontSize: 12,
-  fontWeight: '700',
-  color: '#555',
-  backgroundColor: '#f1f1f1',
-  paddingHorizontal: 8,
-  paddingVertical: 4,
-  borderRadius: 999,
-},
+  sceneMenuCard: {
+    backgroundColor: '#FFFDF7',
+    borderRadius: 26,
+    padding: 18,
+    borderWidth: 2,
+    borderColor: '#6B8C51',
+    shadowColor: '#000',
+    shadowOpacity: 0.14,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
 
-warningBadge: {
-  color: '#9a5a00',
-  backgroundColor: '#fff3d6',
-},
+  sceneMenuTitle: {
+    color: '#2E2A22',
+    fontSize: 18,
+    fontWeight: '900',
+    marginBottom: 10,
+  },
 
+  sceneMenuItem: {
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E7DDC5',
+  },
 
-primaryActionButton: {
-  flex: 1,
-  backgroundColor: '#222',
-  paddingVertical: 14,
-  paddingHorizontal: 16,
-  borderRadius: 12,
-  alignItems: 'center',
-},
+  sceneMenuItemDisabled: {
+    opacity: 0.6,
+  },
 
-primaryActionText: {
-  color: '#fff',
-  fontSize: 16,
-  fontWeight: '700',
-},
+  sceneMenuItemText: {
+    color: '#287824',
+    fontSize: 17,
+    fontWeight: '900',
+  },
 
-secondaryActionButton: {
-  flex: 1,
-  backgroundColor: '#fff',
-  paddingVertical: 14,
-  paddingHorizontal: 16,
-  borderRadius: 12,
-  alignItems: 'center',
-  borderWidth: 1,
-  borderColor: '#ccc',
-},
+  sceneMenuItemTextDisabled: {
+    color: '#6D6250',
+  },
 
-secondaryActionText: {
-  color: '#333',
-  fontSize: 16,
-  fontWeight: '700',
-},
+  sceneMenuDeleteText: {
+    color: '#9C4B3C',
+    fontSize: 17,
+    fontWeight: '900',
+  },
 
-compactSettingRow: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  borderWidth: 1,
-  borderColor: '#eee',
-  borderRadius: 12,
-  padding: 14,
-  marginBottom: 18,
-  backgroundColor: '#fafafa',
-  gap: 12,
-},
+  sceneMenuCancelButton: {
+    marginTop: 14,
+    paddingVertical: 13,
+    borderRadius: 999,
+    alignItems: 'center',
+    backgroundColor: '#E7F0D6',
+  },
 
-compactSettingTitle: {
-  fontSize: 13,
-  fontWeight: '700',
-  color: '#444',
-  marginBottom: 2,
-},
+  sceneMenuCancelText: {
+    color: '#287824',
+    fontSize: 17,
+    fontWeight: '900',
+  },
 
-compactSettingText: {
-  fontSize: 13,
-  color: '#666',
-},
+  backToTopButton: {
+    alignSelf: 'center',
+    paddingVertical: 11,
+    paddingHorizontal: 18,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#D9CBA5',
+    backgroundColor: '#FFFDF7',
+    marginBottom: 24,
+  },
 
-compactSettingButton: {
-  paddingVertical: 8,
-  paddingHorizontal: 14,
-  borderRadius: 999,
-  borderWidth: 1,
-  borderColor: '#ccc',
-  backgroundColor: '#fff',
-},
-
-compactSettingButtonText: {
-  fontSize: 13,
-  fontWeight: '700',
-  color: '#333',
-},
-
-linkToggleButton: {
-  alignSelf: 'flex-start',
-  marginTop: 8,
-  marginBottom: 4,
-  paddingVertical: 6,
-  paddingHorizontal: 10,
-  borderRadius: 999,
-  backgroundColor: '#f5f5f5',
-},
-
-linkToggleText: {
-  fontSize: 13,
-  fontWeight: '700',
-  color: '#555',
-},
-
-shareButton: {
-  backgroundColor: '#fff',
-  paddingVertical: 14,
-  paddingHorizontal: 20,
-  borderRadius: 12,
-  alignItems: 'center',
-  marginTop: 20,
-  borderWidth: 1,
-  borderColor: '#ccc',
-},
-
-shareButtonText: {
-  color: '#333',
-  fontSize: 16,
-  fontWeight: '700',
-},
-
-
-storyHeroCard: {
-  backgroundColor: '#fff',
-  borderRadius: 18,
-  padding: 18,
-  marginBottom: 22,
-  borderWidth: 1,
-  borderColor: '#eee',
-},
-
-
-
-
-playSettingTitle: {
-  fontSize: 14,
-  fontWeight: '700',
-  color: '#333',
-  marginBottom: 3,
-},
-
-sectionHeaderRow: {
-  flexDirection: 'row',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  marginBottom: 10,
-},
-
-sectionTitle: {
-  fontSize: 20,
-  fontWeight: '700',
-},
-
-sectionCount: {
-  color: '#777',
-  fontSize: 13,
-  fontWeight: '600',
-},
-
-emptyStateCard: {
-  backgroundColor: '#fff',
-  borderRadius: 16,
-  padding: 16,
-  marginBottom: 18,
-  borderWidth: 1,
-  borderColor: '#eee',
-},
-
-emptyStateTitle: {
-  fontSize: 16,
-  fontWeight: '700',
-  marginBottom: 4,
-},
-
-emptyStateText: {
-  color: '#666',
-  lineHeight: 20,
-},
-
-exportCard: {
-  backgroundColor: '#fff',
-  borderRadius: 18,
-  padding: 18,
-  marginTop: 8,
-  marginBottom: 30,
-  borderWidth: 1,
-  borderColor: '#eee',
-},
-
-exportDescription: {
-  color: '#666',
-  lineHeight: 20,
-  marginTop: 8,
-  marginBottom: 14,
-},
-
-exportButton: {
-  backgroundColor: '#fafafa',
-  paddingVertical: 14,
-  paddingHorizontal: 16,
-  borderRadius: 12,
-  alignItems: 'center',
-  borderWidth: 1,
-  borderColor: '#ddd',
-},
-
-exportButtonText: {
-  color: '#333',
-  fontSize: 16,
-  fontWeight: '700',
-},
-
-
+  backToTopButtonText: {
+    color: '#463D2F',
+    fontSize: 15,
+    fontWeight: '900',
+  },
 });

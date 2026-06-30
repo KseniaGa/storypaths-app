@@ -161,6 +161,79 @@ const formatSignedAmount = (amount: number) =>
 const clampNumber = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(max, value));
 
+const getCleanSceneTitle = () => sceneTitle.trim() || 'Untitled scene';
+
+const hasDuplicateSceneTitle = (candidateTitle: string, currentSceneId?: string) =>
+  scenes.some((scene) => {
+    const sameScene = currentSceneId && scene.id === currentSceneId;
+    return (
+      !sameScene &&
+      scene.title.trim().toLowerCase() === candidateTitle.trim().toLowerCase()
+    );
+  });
+
+const saveCurrentScene = (): { sceneId: string; wasNew: boolean } | null => {
+  const cleanTitle = getCleanSceneTitle();
+  const currentSceneId = existingScene?.id;
+
+  if (hasDuplicateSceneTitle(cleanTitle, currentSceneId)) {
+    Alert.alert(
+      'Scene name already exists',
+      'Another scene already has this name. Please choose a different scene name.'
+    );
+    return null;
+  }
+
+  if (existingScene) {
+    const existingIndex = scenes.findIndex((scene) => scene.id === existingScene.id);
+
+    if (existingIndex === -1) {
+      Alert.alert('Could not save scene', 'This scene could not be found.');
+      return null;
+    }
+
+    updateScene(existingIndex, {
+      id: existingScene.id,
+      title: cleanTitle,
+      text: sceneText || '',
+      choices,
+      assets,
+      isDone: existingScene.isDone,
+    });
+
+    return { sceneId: existingScene.id, wasNew: false };
+  }
+
+  const newSceneId = addScene({
+    id: '',
+    title: cleanTitle,
+    text: sceneText || '',
+    choices,
+    assets,
+  });
+
+  if (parentSceneId && choiceIndex !== undefined) {
+    const parentIndex = scenes.findIndex((scene) => scene.id === parentSceneId);
+
+    if (parentIndex !== -1) {
+      const parentScene = scenes[parentIndex];
+      const updatedChoices = [...parentScene.choices];
+
+      updatedChoices[Number(choiceIndex)] = {
+        ...updatedChoices[Number(choiceIndex)],
+        targetSceneId: newSceneId,
+      };
+
+      updateScene(parentIndex, {
+        ...parentScene,
+        choices: updatedChoices,
+      });
+    }
+  }
+
+  return { sceneId: newSceneId, wasNew: true };
+};
+
   const hasUnsavedChanges =
   sceneTitle !== (existingScene?.title || '') ||
   sceneText !== (existingScene?.text || '') ||
@@ -237,19 +310,8 @@ useEffect(() => {
   <Pressable
     style={styles.returnSceneButton}
     onPress={() => {
-      if (existingScene) {
-        const existingIndex = scenes.findIndex(
-          (scene) => scene.id === existingScene.id
-        );
-
-        updateScene(existingIndex, {
-          id: existingScene.id,
-          title: sceneTitle || 'Untitled scene',
-          text: sceneText || '',
-          choices,
-          assets,
-        });
-      }
+      const saved = saveCurrentScene();
+      if (!saved) return;
 
       router.replace({
         pathname: '/scene-editor',
@@ -280,7 +342,7 @@ useEffect(() => {
 )}
 
 <View style={styles.sectionCard}>
-  <Text style={styles.sectionTitle}>Scene details</Text>
+  <Text style={styles.sectionTitle}>Scene details 🌿</Text>
 
   <Text style={styles.storyContext}>Story: {storyTitle}</Text>
 
@@ -305,7 +367,7 @@ useEffect(() => {
 </View>
 
 
-      <Text style={styles.label}>Choices</Text>
+      <Text style={styles.mainSectionHeading}>Choices</Text>
 
 
 {choices.map((choice, index) => {
@@ -477,25 +539,14 @@ const requiredValueLabel =
       <Pressable
         style={styles.openTargetButton}
         onPress={() => {
-          if (existingScene) {
-            const existingIndex = scenes.findIndex(
-              (scene) => scene.id === existingScene.id
-            );
-
-            updateScene(existingIndex, {
-              id: existingScene.id,
-              title: sceneTitle || 'Untitled scene',
-              text: sceneText || '',
-              choices,
-              assets,
-            });
-          }
+          const saved = saveCurrentScene();
+          if (!saved) return;
 
           router.replace({
   pathname: '/scene-editor',
   params: {
     sceneId: targetScene.id,
-    returnSceneId: existingScene?.id,
+    returnSceneId: saved.sceneId,
   },
 });
         }}
@@ -1065,104 +1116,50 @@ const requiredValueLabel =
 </View>
 
  <View style={styles.sectionCard}>
-  <Text style={styles.sectionTitle}>Media 🎨</Text>
+  <Text style={styles.sectionTitle}>Scene media 🎨</Text>
 
+  <Text style={styles.mediaStatus}>
+    {assets.length > 0
+      ? `🎨 ${assets.length} media item${assets.length === 1 ? '' : 's'} added`
+      : 'No media added yet'}
+  </Text>
 
+  <Text style={styles.helperText}>
+    Add images, drawings, audio, or voice notes. Your scene will be saved first so the media has somewhere to live.
+  </Text>
 
-  {existingScene ? (
-    <>
-      <Text style={styles.mediaStatus}>
-        {assets.length > 0
-          ? `🎨 ${assets.length} media item${assets.length === 1 ? '' : 's'} added`
-          : 'No media added yet'}
-      </Text>
+  <Pressable
+    style={styles.mediaButton}
+    onPress={() => {
+      const saved = saveCurrentScene();
+      if (!saved) return;
 
-      <Pressable
-        style={styles.mediaButton}
-        onPress={() => {
-          const existingIndex = scenes.findIndex(
-            (scene) => scene.id === existingScene.id
-          );
-
-          updateScene(existingIndex, {
-            id: existingScene.id,
-            title: sceneTitle || 'Untitled scene',
-            text: sceneText || '',
-            choices,
-            assets,
-          });
-
-          router.push({
-            pathname: '/scene-media',
-            params: {
-              sceneId: existingScene.id,
-            },
-          });
-        }}
-      >
-        <Text style={styles.mediaButtonText}>Edit media</Text>
-      </Pressable>
-    </>
-  ) : (
-    <Text style={styles.helperText}>
-      Save this scene first to add images, drawings, or audio.
-    </Text>
-  )}
+      router.push({
+        pathname: '/scene-media',
+        params: {
+          sceneId: saved.sceneId,
+        },
+      });
+    }}
+  >
+    <Text style={styles.mediaButtonText}>Edit media</Text>
+  </Pressable>
 </View>
 
 <Pressable
   style={styles.button}
   onPress={() => {
-    if (sceneId !== undefined && sceneId !== '' && existingScene) {
-      const existingIndex = scenes.findIndex((scene) => scene.id === sceneId);
+    const saved = saveCurrentScene();
+    if (!saved) return;
 
-      updateScene(existingIndex, {
-        id: existingScene.id,
-        title: sceneTitle || 'Untitled scene',
-        text: sceneText || '',
-        choices,
-        assets,
+    if (saved.wasNew) {
+      router.replace({
+        pathname: '/scene-editor',
+        params: {
+          sceneId: saved.sceneId,
+          returnSceneId: typeof parentSceneId === 'string' ? parentSceneId : undefined,
+        },
       });
-
-      router.replace('/story');
-    } else {
-      const newSceneId = addScene({
-        id: '',
-        title: sceneTitle || 'Untitled scene',
-        text: sceneText || '',
-        choices,
-        assets,
-      });
-
-      if (parentSceneId && choiceIndex !== undefined) {
-        const parentIndex = scenes.findIndex(
-          (scene) => scene.id === parentSceneId
-        );
-
-        if (parentIndex !== -1) {
-          const parentScene = scenes[parentIndex];
-
-          const updatedChoices = [...parentScene.choices];
-          updatedChoices[Number(choiceIndex)] = {
-            ...updatedChoices[Number(choiceIndex)],
-            targetSceneId: newSceneId,
-          };
-
-          updateScene(parentIndex, {
-            ...parentScene,
-            choices: updatedChoices,
-          });
-        }
-
-        router.replace({
-          pathname: '/scene-editor',
-          params: {
-            sceneId: parentSceneId,
-          },
-        });
-      } else {
-        router.replace('/story');
-      }
     }
   }}
 >
@@ -1178,17 +1175,19 @@ const requiredValueLabel =
 const styles = StyleSheet.create({
     container: {
         padding: 24,
-        paddingBottom: 80, // Add this extra padding so the button clears the bottom edge!
+        paddingTop: 52,
+        paddingBottom: 100,
+        backgroundColor: '#F7F1E1', // Add this extra padding so the button clears the bottom edge!
       },
 
 
 returnSceneButton: {
-  backgroundColor: '#eef2ff',
+  backgroundColor: '#FFFCF2',
   borderWidth: 1,
-  borderColor: '#c7d2fe',
+  borderColor: '#D8CCAA',
   paddingVertical: 12,
   paddingHorizontal: 14,
-  borderRadius: 12,
+  borderRadius: 18,
   marginBottom: 12,
 },
 
@@ -1208,7 +1207,7 @@ logicSubsectionTitle: {
 
 logicSubsectionText: {
   fontSize: 14,
-  color: '#666',
+  color: '#665D4E',
   lineHeight: 20,
   marginBottom: 10,
 },
@@ -1266,20 +1265,20 @@ checkboxTextArea: {
 },
 
 returnSceneButtonText: {
-  color: '#3730a3',
+  color: '#3D3528',
   fontWeight: '700',
 },
 
       choiceTitleInput: {
   flex: 1,
   borderWidth: 1,
-  borderColor: '#eee',
-  borderRadius: 10,
+  borderColor: '#D8CCAA',
+  borderRadius: 22,
   paddingVertical: 8,
   paddingHorizontal: 10,
   fontSize: 15,
   fontWeight: '600',
-  backgroundColor: '#fafafa',
+  backgroundColor: '#FFFDF7',
   marginRight: 8,
 },
 
@@ -1292,37 +1291,39 @@ targetOptionRow: {
 
 targetSelectButton: {
   flex: 1,
-  paddingVertical: 10,
-  paddingHorizontal: 10,
-  borderRadius: 10,
-  backgroundColor: '#fff',
+  paddingVertical: 12,
+  paddingHorizontal: 12,
+  borderRadius: 18,
+  backgroundColor: '#247322',
   borderWidth: 1,
-  borderColor: '#eee',
+  borderColor: '#247322',
 },
 
 targetSelectButtonSelected: {
-  borderColor: '#222',
-  backgroundColor: '#f2f2f2',
+  borderColor: '#34C759',
+  backgroundColor: '#247322',
 },
 
 openTargetButton: {
   paddingVertical: 10,
   paddingHorizontal: 12,
-  borderRadius: 10,
-  backgroundColor: '#222',
+  borderRadius: 22,
+  backgroundColor: '#FFFCF2',
+  borderWidth: 1,
+  borderColor: '#D8CCAA',
 },
 
 openTargetButtonText: {
-  color: '#fff',
+  color: '#3D3528',
   fontWeight: '700',
   fontSize: 13,
 },
 
 originChoiceCard: {
-  backgroundColor: '#fff8e8',
+  backgroundColor: '#FFFCF2',
   borderWidth: 1,
-  borderColor: '#ffe1a8',
-  borderRadius: 14,
+  borderColor: '#C9B46F',
+  borderRadius: 20,
   padding: 14,
   marginBottom: 16,
 },
@@ -1331,7 +1332,7 @@ originChoiceLabel: {
   fontSize: 12,
   textTransform: 'uppercase',
   letterSpacing: 0.6,
-  color: '#8a5a00',
+  color: '#8A6400',
   fontWeight: '700',
   marginBottom: 4,
 },
@@ -1339,18 +1340,18 @@ originChoiceLabel: {
 originChoiceText: {
   fontSize: 16,
   fontWeight: '700',
-  color: '#333',
+  color: '#3D3528',
   marginBottom: 4,
 },
 
 originChoiceSubtext: {
-  color: '#666',
+  color: '#665D4E',
   lineHeight: 20,
 },
 
 valueChipSelected: {
-  backgroundColor: '#222',
-  borderColor: '#222',
+  backgroundColor: '#247322',
+  borderColor: '#247322',
 },
 
 valueChipTextSelected: {
@@ -1368,10 +1369,10 @@ valueAmountControl: {
   alignItems: 'center',
   alignSelf: 'flex-start',
   borderWidth: 1,
-  borderColor: '#ddd',
+  borderColor: '#D8CCAA',
   borderRadius: 999,
   overflow: 'hidden',
-  backgroundColor: '#fff',
+  backgroundColor: '#FFFCF2',
 },
 
 valueAmountButton: {
@@ -1382,14 +1383,14 @@ valueAmountButton: {
 valueAmountButtonText: {
   fontSize: 18,
   fontWeight: '700',
-  color: '#333',
+  color: '#3D3528',
 },
 
 valueAmountText: {
   minWidth: 44,
   textAlign: 'center',
   fontWeight: '700',
-  color: '#333',
+  color: '#3D3528',
 },
 
 valueChangeDirectionRow: {
@@ -1403,18 +1404,18 @@ valueDirectionButton: {
   paddingVertical: 10,
   paddingHorizontal: 16,
   borderRadius: 999,
-  backgroundColor: '#fff',
+  backgroundColor: '#FFFCF2',
   borderWidth: 1,
-  borderColor: '#ddd',
+  borderColor: '#D8CCAA',
 },
 
 valueDirectionButtonSelected: {
-  backgroundColor: '#222',
-  borderColor: '#222',
+  backgroundColor: '#247322',
+  borderColor: '#247322',
 },
 
 valueDirectionText: {
-  color: '#333',
+  color: '#3D3528',
   fontWeight: '700',
 },
 
@@ -1430,13 +1431,13 @@ choiceActionStack: {
 advancedSectionLabel: {
   fontSize: 13,
   fontWeight: '700',
-  color: '#333',
+  color: '#3D3528',
   marginTop: 12,
   marginBottom: 6,
 },
 
       logicHelperText: {
-  color: '#777',
+  color: '#8C806F',
   fontSize: 12,
   lineHeight: 18,
   marginBottom: 8,
@@ -1451,11 +1452,11 @@ valueRow: {
 
 valueInput: {
   borderWidth: 1,
-  borderColor: '#ddd',
-  borderRadius: 10,
+  borderColor: '#D8CCAA',
+  borderRadius: 22,
   paddingVertical: 10,
   paddingHorizontal: 10,
-  backgroundColor: '#fff',
+  backgroundColor: '#FFFCF2',
 },
 
 valueNameInput: {
@@ -1470,14 +1471,14 @@ operatorPill: {
   paddingVertical: 10,
   paddingHorizontal: 10,
   borderRadius: 999,
-  backgroundColor: '#fff',
+  backgroundColor: '#FFFCF2',
   borderWidth: 1,
-  borderColor: '#ddd',
+  borderColor: '#D8CCAA',
 },
 
 operatorPillText: {
   fontSize: 12,
-  color: '#333',
+  color: '#3D3528',
   fontWeight: '600',
 },
 
@@ -1492,15 +1493,23 @@ valueChip: {
   paddingVertical: 6,
   paddingHorizontal: 10,
   borderRadius: 999,
-  backgroundColor: '#fff',
+  backgroundColor: '#FFFCF2',
   borderWidth: 1,
-  borderColor: '#ddd',
+  borderColor: '#D8CCAA',
 },
 
 valueChipText: {
   fontSize: 12,
-  color: '#333',
+  color: '#3D3528',
 },
+  mainSectionHeading: {
+    fontSize: 30,
+    lineHeight: 36,
+    fontWeight: '900',
+    color: '#2A251D',
+    marginTop: 8,
+    marginBottom: 14,
+  },
   heading: {
     fontSize: 24,
     marginBottom: 24,
@@ -1512,8 +1521,8 @@ valueChipText: {
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
+    borderColor: '#D8CCAA',
+    borderRadius: 20,
     padding: 12,
     marginBottom: 12,
   },
@@ -1522,57 +1531,58 @@ valueChipText: {
   },
 
   storyContext: {
-    color: '#666',
+    color: '#665D4E',
     marginBottom: 16,
   },
 
   buttonSecondary: {
     paddingVertical: 10,
     paddingHorizontal: 12,
-    borderRadius: 8,
+    borderRadius: 20,
     alignItems: 'center',
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: '#ccc',
+    borderColor: '#D8CCAA',
   },
   button: {
-    backgroundColor: '#222',
+    backgroundColor: '#247322',
     paddingVertical: 14,
-    borderRadius: 8,
+    borderRadius: 20,
     marginTop: 24,
     alignItems: 'center',
   },
   buttonText: {
     color: '#fff',
-    fontSize: 16,
+    fontSize: 17,
+    fontWeight: '900',
   },
   prompt: {
     fontSize: 13,
-    color: '#666',
+    color: '#665D4E',
     marginBottom: 8,
     fontStyle: 'italic',
   },
 
 helperText: {
-  color: '#777',
+  color: '#8C806F',
   marginBottom: 16,
   lineHeight: 20,
 },
 
 choiceMetaLabel: {
   fontSize: 12,
-  color: '#777',
+  color: '#8C806F',
   marginTop: 10,
   marginBottom: 6,
 },
 
 choiceCard: {
   borderWidth: 1,
-  borderColor: '#eee',
-  borderRadius: 14,
+  borderColor: '#D8CCAA',
+  borderRadius: 20,
   padding: 12,
   marginBottom: 14,
-  backgroundColor: '#fff',
+  backgroundColor: '#FFFCF2',
 },
 
 choiceHeaderRow: {
@@ -1599,7 +1609,7 @@ deleteChoiceText: {
 },
 
 choiceTargetText: {
-  color: '#666',
+  color: '#665D4E',
   marginTop: 4,
   marginBottom: 8,
 },
@@ -1616,21 +1626,21 @@ choiceActionButton: {
 },
 
 choiceActionText: {
-  color: '#007AFF',
+  color: '#247322',
   fontWeight: '600',
 },
 
 logicSummaryBox: {
   paddingVertical: 8,
   paddingHorizontal: 10,
-  borderRadius: 10,
-  backgroundColor: '#f7f7f7',
+  borderRadius: 22,
+  backgroundColor: '#F5EFD9',
   marginTop: 4,
   marginBottom: 6,
 },
 
 logicSummaryText: {
-  color: '#555',
+  color: '#665D4E',
   fontSize: 13,
   marginBottom: 2,
 },
@@ -1638,10 +1648,10 @@ logicSummaryText: {
 logicBox: {
   marginTop: 10,
   padding: 12,
-  borderRadius: 12,
-  backgroundColor: '#f7f7f7',
+  borderRadius: 18,
+  backgroundColor: '#F5EFD9',
   borderWidth: 1,
-  borderColor: '#e5e5e5',
+  borderColor: '#D8CCAA',
 },
 
 logicSectionTitle: {
@@ -1664,7 +1674,7 @@ checkbox: {
 
 checkboxLabel: {
   fontSize: 15,
-  color: '#333',
+  color: '#3D3528',
 },
 
 rememberedChoiceList: {
@@ -1678,21 +1688,21 @@ rememberedChoiceChip: {
   paddingVertical: 8,
   paddingHorizontal: 12,
   borderRadius: 999,
-  backgroundColor: '#fff',
+  backgroundColor: '#FFFCF2',
   borderWidth: 1,
-  borderColor: '#ddd',
+  borderColor: '#D8CCAA',
   marginRight: 8,
   marginBottom: 8,
 },
 
 rememberedChoiceChipSelected: {
-  backgroundColor: '#222',
-  borderColor: '#222',
+  backgroundColor: '#247322',
+  borderColor: '#247322',
 },
 
 rememberedChoiceChipText: {
   fontSize: 12,
-  color: '#333',
+  color: '#3D3528',
 },
 
 rememberedChoiceChipTextSelected: {
@@ -1705,17 +1715,17 @@ clearLogicButton: {
 },
 
 clearLogicText: {
-  color: '#777',
+  color: '#8C806F',
   fontSize: 13,
 },
 
 targetBox: {
   marginTop: 10,
   padding: 12,
-  borderRadius: 12,
-  backgroundColor: '#f7f7f7',
+  borderRadius: 18,
+  backgroundColor: '#F5EFD9',
   borderWidth: 1,
-  borderColor: '#e5e5e5',
+  borderColor: '#D8CCAA',
 },
 
 targetOption: {
@@ -1723,12 +1733,12 @@ targetOption: {
 },
 
 targetOptionText: {
-  color: '#333',
+  color: '#fff',
 },
 
 targetOptionTextSelected: {
-  color: '#007AFF',
-  fontWeight: '600',
+  color: '#fff',
+  fontWeight: '800',
 },
 
 createNextSceneButton: {
@@ -1737,12 +1747,12 @@ createNextSceneButton: {
 },
 
 sectionCard: {
-  backgroundColor: '#fff',
-  borderRadius: 16,
+  backgroundColor: '#FFFCF2',
+  borderRadius: 22,
   padding: 16,
   marginBottom: 20,
   borderWidth: 1,
-  borderColor: '#eee',
+  borderColor: '#D8CCAA',
 },
 
 sectionTitle: {
@@ -1754,53 +1764,53 @@ sectionTitle: {
 backButton: {
   paddingVertical: 12,
   paddingHorizontal: 14,
-  borderRadius: 12,
+  borderRadius: 18,
   alignItems: 'center',
   marginBottom: 16,
   borderWidth: 1,
-  borderColor: '#ddd',
-  backgroundColor: '#fff',
+  borderColor: '#D8CCAA',
+  backgroundColor: '#FFFCF2',
 },
 
 backButtonText: {
   fontSize: 15,
-  color: '#333',
+  color: '#3D3528',
 },
 
 mediaDescription: {
-  color: '#666',
+  color: '#665D4E',
   lineHeight: 20,
   marginBottom: 12,
 },
 
 mediaStatus: {
-  color: '#555',
+  color: '#665D4E',
   marginBottom: 12,
 },
 
 mediaButton: {
   paddingVertical: 12,
   paddingHorizontal: 14,
-  borderRadius: 12,
+  borderRadius: 18,
   alignItems: 'center',
   borderWidth: 1,
-  borderColor: '#ddd',
-  backgroundColor: '#fafafa',
+  borderColor: '#D8CCAA',
+  backgroundColor: '#FFFDF7',
 },
 
 mediaButtonText: {
   fontWeight: '600',
-  color: '#333',
+  color: '#3D3528',
 },
 
 addChoiceCard: {
-  backgroundColor: '#fff',
-  borderRadius: 16,
+  backgroundColor: '#FFFCF2',
+  borderRadius: 22,
   padding: 16,
   marginTop: 4,
   marginBottom: 24,
   borderWidth: 1,
-  borderColor: '#e5e5e5',
+  borderColor: '#D8CCAA',
   borderStyle: 'dashed',
 },
 
@@ -1811,7 +1821,7 @@ addChoiceTitle: {
 },
 
 addChoiceHint: {
-  color: '#666',
+  color: '#665D4E',
   fontSize: 14,
   lineHeight: 20,
   marginBottom: 12,
@@ -1819,21 +1829,21 @@ addChoiceHint: {
 
 addChoiceInput: {
   borderWidth: 1,
-  borderColor: '#ddd',
-  borderRadius: 12,
+  borderColor: '#D8CCAA',
+  borderRadius: 18,
   padding: 12,
   marginBottom: 12,
-  backgroundColor: '#fafafa',
+  backgroundColor: '#FFFDF7',
 },
 
 addChoiceButton: {
   paddingVertical: 12,
   paddingHorizontal: 14,
-  borderRadius: 12,
+  borderRadius: 18,
   alignItems: 'center',
   borderWidth: 1,
-  borderColor: '#ddd',
-  backgroundColor: '#fafafa',
+  borderColor: '#D8CCAA',
+  backgroundColor: '#FFFDF7',
 },
 
 addChoiceButtonDisabled: {
@@ -1842,11 +1852,11 @@ addChoiceButtonDisabled: {
 
 addChoiceButtonText: {
   fontWeight: '600',
-  color: '#333',
+  color: '#3D3528',
 },
 
 addChoiceButtonTextDisabled: {
-  color: '#777',
+  color: '#8C806F',
 },
 
 });

@@ -43,14 +43,7 @@ const templates = [
     emoji: '🪞',
     title: 'Personal Reflection',
     level: 'Beginner',
-    description: 'A gentle structure for memories, feelings, or lived experiences.',
-    features: 'Coming soon',
-  },
-  {
-    emoji: '🕯️',
-    title: 'Symbolic Journey',
-    level: 'Beginner',
-    description: 'Tell something indirectly through places, objects, dreams, or metaphors.',
+    description: 'A structure for memories, feelings, or lived experiences.',
     features: 'Coming soon',
   },
 
