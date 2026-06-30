@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage, StateStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
-import { Scene, StoryMode, StoryProject } from '../types/story';
+import { Scene, StoryMode, StoryProject, StoryValueDefinition } from '../types/story';
 
 const universalStorage: StateStorage = {
   getItem: async (name: string) => {
@@ -30,7 +30,8 @@ const universalStorage: StateStorage = {
   },
 };
 
-
+const createStoryValueId = () =>
+  `value-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
 const createSceneId = () =>
   `scene-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -51,9 +52,19 @@ type StoryStore = {
   updateScene: (index: number, scene: Scene) => void;
   deleteScene: (id: string) => void;
 
+  toggleSceneDone: (id: string) => void;
+
   renameStory: (id: string, newTitle: string) => void;
 
+  toggleShowSceneTitlesInPlay: () => void;
+
+  setBackgroundMusic: (music: { uri: string; name?: string }) => void;
+  removeBackgroundMusic: () => void;
+
   exportCurrentStory: () => string | null;
+
+  addStoryValue: (value: Omit<StoryValueDefinition, 'id'>) => string;
+  deleteStoryValue: (id: string) => void;
 
   importStory: (story: StoryProject) => void;
 
@@ -79,6 +90,8 @@ export const useStoryStore = create<StoryStore>()(
           title,
           mode,
           scenes: [],
+          storyValues: [],
+          backgroundMusic: undefined,
         };
 
         set((state) => ({
@@ -121,6 +134,97 @@ export const useStoryStore = create<StoryStore>()(
             : story
         ),
       })),
+
+
+toggleShowSceneTitlesInPlay: () =>
+  set((state) => ({
+    stories: state.stories.map((story) =>
+      story.id === state.currentStoryId
+        ? {
+            ...story,
+            showSceneTitlesInPlay: !(story.showSceneTitlesInPlay ?? true),
+          }
+        : story
+    ),
+  })),
+
+  setBackgroundMusic: (music) =>
+  set((state) => ({
+    stories: state.stories.map((story) =>
+      story.id === state.currentStoryId
+        ? {
+            ...story,
+            backgroundMusic: music,
+          }
+        : story
+    ),
+  })),
+
+removeBackgroundMusic: () =>
+  set((state) => ({
+    stories: state.stories.map((story) =>
+      story.id === state.currentStoryId
+        ? {
+            ...story,
+            backgroundMusic: undefined,
+          }
+        : story
+    ),
+  })),
+
+  addStoryValue: (value) => {
+  const newId = createStoryValueId();
+
+  const newValue: StoryValueDefinition = {
+    id: newId,
+    name: value.name,
+    initialValue: value.initialValue,
+    minValue: value.minValue,
+    maxValue: value.maxValue,
+    step: value.step,
+  };
+
+  set((state) => ({
+    stories: state.stories.map((story) =>
+      story.id === state.currentStoryId
+        ? {
+            ...story,
+            storyValues: [...(story.storyValues || []), newValue],
+          }
+        : story
+    ),
+  }));
+
+  return newId;
+},
+
+deleteStoryValue: (id) =>
+  set((state) => ({
+    stories: state.stories.map((story) =>
+      story.id === state.currentStoryId
+        ? {
+            ...story,
+            storyValues: (story.storyValues || []).filter(
+              (value) => value.id !== id
+            ),
+            scenes: story.scenes.map((scene) => ({
+              ...scene,
+              choices: scene.choices.map((choice) => ({
+                ...choice,
+                valueChange:
+                  choice.valueChange?.valueId === id
+                    ? undefined
+                    : choice.valueChange,
+                requiredValue:
+                  choice.requiredValue?.valueId === id
+                    ? undefined
+                    : choice.requiredValue,
+              })),
+            })),
+          }
+        : story
+    ),
+  })),
 
 
      exportCurrentStory: () => {
@@ -264,7 +368,81 @@ exportCurrentStoryAsHtml: () => {
 
   <script>
     const story = ${storyJson};
-    let currentSceneId = story.scenes[0]?.id;
+let currentSceneId = story.scenes[0]?.id;
+let chosenChoiceIds = [];
+let activeTraces = [];
+let storyValues = createInitialStoryValues();
+
+function createInitialStoryValues() {
+  const values = {};
+  (story.storyValues || []).forEach((storyValue) => {
+    values[storyValue.id] = storyValue.initialValue ?? 0;
+  });
+  return values;
+}
+
+function normalizeTrace(trace) {
+  return String(trace || '').trim().toLowerCase().replace(/\\s+/g, '_');
+}
+
+function normalizeStoryValueName(name) {
+  return String(name || '').trim().toLowerCase().replace(/\\s+/g, '_');
+}
+
+function findStoryValueDefinition(value) {
+  return (story.storyValues || []).find(
+    (storyValue) =>
+      storyValue.id === value?.valueId || storyValue.name === value?.name
+  );
+}
+
+function getStoryValueKey(value) {
+  if (value?.valueId) {
+    return value.valueId;
+  }
+
+  if (value?.name) {
+    const matchingDefinition = findStoryValueDefinition(value);
+    return matchingDefinition?.id || normalizeStoryValueName(value.name);
+  }
+
+  return undefined;
+}
+
+function clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function doesStoryValuePass(requiredValue) {
+  const valueKey = getStoryValueKey(requiredValue);
+
+  if (!valueKey) {
+    return true;
+  }
+
+  const storyValueDefinition = findStoryValueDefinition(requiredValue);
+
+  const currentValue =
+    storyValues[valueKey] ?? storyValueDefinition?.initialValue ?? 0;
+
+  const requiredAmount = Number(
+    requiredValue.amount ?? storyValueDefinition?.initialValue ?? 0
+  );
+
+  if (requiredValue.operator === 'atMost') {
+    return currentValue <= requiredAmount;
+  }
+
+  if (requiredValue.operator === 'equals') {
+    return currentValue === requiredAmount;
+  }
+
+  return currentValue >= requiredAmount;
+}
+
+function getChoiceId(sceneId, choice, index) {
+  return choice.id || sceneId + '-choice-' + index;
+}
 
     function getSceneById(id) {
       return story.scenes.find(scene => scene.id === id);
@@ -304,33 +482,99 @@ exportCurrentStoryAsHtml: () => {
       choicesEl.innerHTML = '';
       emptyEl.style.display = 'none';
 
-      if (scene.choices && scene.choices.length > 0) {
-        scene.choices.forEach(choice => {
-          const btn = document.createElement('button');
-          btn.textContent = choice.label + (choice.targetSceneId ? '' : ' (no target yet)');
-          btn.onclick = () => {
-            if (choice.targetSceneId) {
-              currentSceneId = choice.targetSceneId;
-              renderScene();
-            }
-          };
-          choicesEl.appendChild(btn);
-        });
-      } else {
-        emptyEl.style.display = 'block';
-        emptyEl.textContent = 'The story ends here.';
+     const visibleChoices = (scene.choices || []).filter((choice) => {
+  if (
+    choice.requiredChoiceId &&
+    !chosenChoiceIds.includes(choice.requiredChoiceId)
+  ) {
+    return false;
+  }
+
+  if (choice.requiredValue && !doesStoryValuePass(choice.requiredValue)) {
+    return false;
+  }
+
+  const requiredTrace = choice.requiredTraceLabel?.trim();
+
+  if (
+    requiredTrace &&
+    !activeTraces.includes(normalizeTrace(requiredTrace))
+  ) {
+    return false;
+  }
+
+  return true;
+});
+
+if (visibleChoices.length > 0) {
+  visibleChoices.forEach((choice, index) => {
+    const btn = document.createElement('button');
+    btn.textContent = choice.label + (choice.targetSceneId ? '' : ' (no target yet)');
+
+    btn.onclick = () => {
+      const choiceId = getChoiceId(scene.id, choice, index);
+
+      if (!chosenChoiceIds.includes(choiceId)) {
+        chosenChoiceIds.push(choiceId);
       }
-    }
 
-    function restartStory() {
-      currentSceneId = story.scenes[0]?.id;
-      renderScene();
-    }
+      if (choice.traceLabel?.trim()) {
+        const trace = normalizeTrace(choice.traceLabel);
+        if (!activeTraces.includes(trace)) {
+          activeTraces.push(trace);
+        }
+      }
 
-    renderScene();
+      if (choice.valueChange) {
+        const valueKey = getStoryValueKey(choice.valueChange);
+        const storyValueDefinition = findStoryValueDefinition(choice.valueChange);
+
+        const amount = Number(
+          choice.valueChange.amount ?? storyValueDefinition?.step ?? 0
+        );
+
+        if (valueKey && !Number.isNaN(amount)) {
+          const currentValue =
+            storyValues[valueKey] ?? storyValueDefinition?.initialValue ?? 0;
+
+          const nextValue = currentValue + amount;
+
+          storyValues[valueKey] = storyValueDefinition
+            ? clampNumber(
+                nextValue,
+                storyValueDefinition.minValue,
+                storyValueDefinition.maxValue
+              )
+            : nextValue;
+        }
+      }
+
+      if (choice.targetSceneId) {
+        currentSceneId = choice.targetSceneId;
+        renderScene();
+      }
+    };
+
+    choicesEl.appendChild(btn);
+  });
+} else {
+  emptyEl.style.display = 'block';
+  emptyEl.textContent = 'The story ends here.';
+}
+}
+
+function restartStory() {
+  currentSceneId = story.scenes[0]?.id;
+  chosenChoiceIds = [];
+  activeTraces = [];
+  storyValues = createInitialStoryValues();
+  renderScene();
+}
+
+        renderScene();
   </script>
-</body>
   </div>
+</body>
 </html>`;
 },
 
@@ -389,6 +633,23 @@ addScene: (scene) => {
           ),
         })),
 
+
+        toggleSceneDone: (id) =>
+  set((state) => ({
+    stories: state.stories.map((story) =>
+      story.id === state.currentStoryId
+        ? {
+            ...story,
+            scenes: story.scenes.map((scene) =>
+              scene.id === id
+                ? { ...scene, isDone: !scene.isDone }
+                : scene
+            ),
+          }
+        : story
+    ),
+  })),
+
       getCurrentStory: () => {
         const state = get();
         return state.stories.find((story) => story.id === state.currentStoryId);
@@ -400,31 +661,59 @@ addScene: (scene) => {
           title: 'Goose Story',
           mode: 'personal',
           scenes: [
-            {
-              id: 'goose',
-              title: 'Goose',
-              text: 'You are a goose near a quiet pond.',
-              choices: [
-                { label: 'Look at pond', targetSceneId: 'pond' },
-                { label: 'Walk into forest', targetSceneId: 'forest' },
-              ],
-              assets: [],
-            },
-            {
-              id: 'pond',
-              title: 'Pond',
-              text: 'The pond is calm and full of mysterious ripples.',
-              choices: [{ label: 'Go back to goose place', targetSceneId: 'goose' }],
-              assets: [],
-            },
-            {
-              id: 'forest',
-              title: 'Forest',
-              text: 'The forest is dark, wet, and smells like moss.',
-              choices: [{ label: 'Return to pond', targetSceneId: 'pond' }],
-              assets: [],
-            },
-          ],
+  {
+    id: 'goose',
+    title: 'Goose',
+    text: 'You are a goose near a quiet pond.',
+    choices: [
+      {
+        id: 'choice-look-at-pond',
+        label: 'Look at pond',
+        targetSceneId: 'pond',
+        rememberChoice: true,
+      },
+      {
+        id: 'choice-walk-into-forest',
+        label: 'Walk into forest',
+        targetSceneId: 'forest',
+        rememberChoice: true,
+      },
+    ],
+    assets: [],
+  },
+  {
+    id: 'pond',
+    title: 'Pond',
+    text: 'The pond is calm and full of mysterious ripples.',
+    choices: [
+      {
+        id: 'choice-go-back-to-goose',
+        label: 'Go back to goose place',
+        targetSceneId: 'goose',
+      },
+    ],
+    assets: [],
+  },
+  {
+    id: 'forest',
+    title: 'Forest',
+    text: 'The forest is dark, wet, and smells like moss.',
+    choices: [
+      {
+        id: 'choice-return-to-pond',
+        label: 'Return to pond',
+        targetSceneId: 'pond',
+      },
+      {
+        id: 'choice-remember-the-pond',
+        label: 'Remember the pond',
+        targetSceneId: 'pond',
+        requiredChoiceId: 'choice-look-at-pond',
+      },
+    ],
+    assets: [],
+  },
+],
         };
 
         set((state) => {

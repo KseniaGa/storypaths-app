@@ -1,91 +1,57 @@
-import { View, Text, TextInput, StyleSheet } from 'react-native';
+import { View, Text, TextInput, StyleSheet, Pressable } from 'react-native';
 import { useState } from 'react';
-import { Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { useStoryStore } from '../store/storyStore';
-
 
 export default function NewStoryScreen() {
   const [title, setTitle] = useState('');
   const createStory = useStoryStore((state) => state.createStory);
-  const [mode, setMode] = useState<'personal' | 'symbolic' | 'fictional'>('personal');
-  
-  const modes = [
-  {
-    key: 'personal',
-    title: 'Personal',
-    description:
-      'Tell something connected to your own experience. You can be as direct or as selective as you want.',
-  },
-  {
-    key: 'symbolic',
-    title: 'Symbolic',
-    description:
-      'Express something through imagery, metaphor, or atmosphere. You do not need to explain everything literally.',
-  },
-  {
-    key: 'fictional',
-    title: 'Fictional',
-    description:
-      'Create a story with distance from real life. You can invent characters, places, and events freely.',
-  },
-];
+
+  const handleCreateStory = () => {
+    createStory(title.trim() || 'Untitled story', 'fictional');
+    router.push('/story');
+  };
 
   return (
     <View style={styles.container}>
       <Text style={styles.heading}>Start a new story 🌱</Text>
 
+      <Text style={styles.intro}>
+        Give your story a name. You can start simple and change things later.
+      </Text>
+
       <Text style={styles.label}>Story title</Text>
+
       <TextInput
         style={styles.input}
-        placeholder="Untitled story"
+        placeholder="My story"
         value={title}
         onChangeText={setTitle}
       />
 
-      <Text style={styles.preview}>
-        Preview: {title || 'Untitled story'}
-      </Text>
+      <Text style={styles.preview}>Preview: {title.trim() || 'Untitled story'}</Text>
 
-      <Text style={styles.label}>Story style</Text>
+      <View style={styles.reassuranceBox}>
+        <Text style={styles.reassuranceTitle}>You choose how personal it feels</Text>
 
-{modes.map((m) => (
-  <Pressable
-    key={m.key}
-    onPress={() => setMode(m.key as any)}
-    style={{
-      marginBottom: 12,
-      padding: 12,
-      borderRadius: 8,
-      borderWidth: 1,
-      borderColor: mode === m.key ? '#007AFF' : '#ddd',
-    }}
-  >
-        <Text
-      style={{
-        fontWeight: '600',
-        color: mode === m.key ? '#007AFF' : '#000',
-        marginBottom: 4,
-      }}
-        >
-          {m.title}
+        <Text style={styles.reassuranceText}>
+          Your story can be based on real experience, told through symbols, or completely
+          fictional. 
         </Text>
+      </View>
 
-    <Text style={{ color: '#666', fontSize: 13 }}>
-      {m.description}
-    </Text>
-
+      <Pressable style={styles.button} onPress={handleCreateStory}>
+        <Text style={styles.buttonText}>Create blank story</Text>
       </Pressable>
-    ))}
 
       <Pressable
-        style={styles.button}
+        style={styles.secondaryButton}
         onPress={() => {
-          createStory(title || 'Untitled story', mode);
-          router.push('/story');
+          
+          router.push('/templates')
         }}
       >
-        <Text style={styles.buttonText}>Create story</Text>
+        <Text style={styles.secondaryButtonText}>Choose a template</Text>
       </Pressable>
     </View>
   );
@@ -97,33 +63,71 @@ const styles = StyleSheet.create({
     padding: 24,
   },
   heading: {
-    fontSize: 24,
+    fontSize: 26,
+    fontWeight: '700',
+    marginBottom: 12,
+  },
+  intro: {
+    fontSize: 15,
+    color: '#555',
+    lineHeight: 21,
     marginBottom: 24,
   },
   label: {
     fontSize: 14,
+    fontWeight: '600',
     marginBottom: 8,
   },
   input: {
     borderWidth: 1,
     borderColor: '#ccc',
-    borderRadius: 8,
+    borderRadius: 10,
     padding: 12,
-    marginBottom: 16,
+    marginBottom: 12,
+    fontSize: 16,
   },
   preview: {
     color: '#666',
+    marginBottom: 20,
   },
-button: {
-  backgroundColor: '#222',
-  paddingVertical: 14,
-  borderRadius: 8,
-  marginTop: 24,
-  alignItems: 'center',
-},
-buttonText: {
-  color: '#fff',
-  fontSize: 16,
-},
-
+  reassuranceBox: {
+    backgroundColor: '#F7F2FF',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 24,
+  },
+  reassuranceTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  reassuranceText: {
+    fontSize: 14,
+    color: '#555',
+    lineHeight: 20,
+  },
+  button: {
+    backgroundColor: '#222',
+    paddingVertical: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  buttonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  secondaryButton: {
+    borderWidth: 1,
+    borderColor: '#ccc',
+    paddingVertical: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  secondaryButtonText: {
+    color: '#222',
+    fontSize: 16,
+    fontWeight: '600',
+  },
 });
