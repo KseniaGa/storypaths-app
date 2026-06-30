@@ -1,28 +1,33 @@
-import { create } from 'zustand';
-import { persist, createJSONStorage, StateStorage } from 'zustand/middleware';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform } from 'react-native';
-import { Scene, StoryMode, StoryProject, StoryValueDefinition } from '../types/story';
+import { create } from "zustand";
+import { persist, createJSONStorage, StateStorage } from "zustand/middleware";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Platform } from "react-native";
+import {
+  Scene,
+  StoryMode,
+  StoryProject,
+  StoryValueDefinition,
+} from "../types/story";
 
 const universalStorage: StateStorage = {
   getItem: async (name: string) => {
-    if (Platform.OS === 'web') {
-      if (typeof window === 'undefined') return null;
+    if (Platform.OS === "web") {
+      if (typeof window === "undefined") return null;
       return window.localStorage.getItem(name);
     }
     return await AsyncStorage.getItem(name);
   },
   setItem: async (name: string, value: string) => {
-    if (Platform.OS === 'web') {
-      if (typeof window === 'undefined') return;
+    if (Platform.OS === "web") {
+      if (typeof window === "undefined") return;
       window.localStorage.setItem(name, value);
       return;
     }
     await AsyncStorage.setItem(name, value);
   },
   removeItem: async (name: string) => {
-    if (Platform.OS === 'web') {
-      if (typeof window === 'undefined') return;
+    if (Platform.OS === "web") {
+      if (typeof window === "undefined") return;
       window.localStorage.removeItem(name);
       return;
     }
@@ -38,6 +43,19 @@ const createSceneId = () =>
 
 const createStoryId = () =>
   `story-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+
+type BackgroundMusic =
+  | {
+      type: "uploaded";
+      uri: string;
+      name: string;
+    }
+  | {
+      type: "built-in";
+      builtInId: string;
+      name: string;
+    };
 
 type StoryStore = {
   stories: StoryProject[];
@@ -59,12 +77,12 @@ type StoryStore = {
 
   toggleShowSceneTitlesInPlay: () => void;
 
-  setBackgroundMusic: (music: { uri: string; name?: string }) => void;
+  setBackgroundMusic: (music: BackgroundMusic) => void;
   removeBackgroundMusic: () => void;
 
   exportCurrentStory: () => string | null;
 
-  addStoryValue: (value: Omit<StoryValueDefinition, 'id'>) => string;
+  addStoryValue: (value: Omit<StoryValueDefinition, "id">) => string;
   deleteStoryValue: (id: string) => void;
 
   importStory: (story: StoryProject) => void;
@@ -86,15 +104,15 @@ export const useStoryStore = create<StoryStore>()(
       setHasHydrated: (state: boolean) => set({ _hasHydrated: state }),
 
       createStory: (title, mode) => {
-        const newStory = {
+        const newStory: StoryProject = {
           id: createStoryId(),
           title,
           mode,
-          icon: '🪲',
           scenes: [],
           storyValues: [],
           backgroundMusic: undefined,
-        } as StoryProject & { icon?: string };
+          icon: "🪲",
+        } as StoryProject;
 
         set((state) => ({
           stories: [...state.stories, newStory],
@@ -110,157 +128,152 @@ export const useStoryStore = create<StoryStore>()(
           return {
             stories: filtered,
             currentStoryId:
-              state.currentStoryId === id ? (filtered[0]?.id ?? null) : state.currentStoryId,
+              state.currentStoryId === id
+                ? (filtered[0]?.id ?? null)
+                : state.currentStoryId,
           };
         }),
 
-    importStory: (story) =>
-      set((state) => {
-        const existing = state.stories.find((s) => s.id === story.id);
+      importStory: (story) =>
+        set((state) => {
+          const existing = state.stories.find((s) => s.id === story.id);
 
-        const stories = existing
-          ? state.stories.map((s) => (s.id === story.id ? story : s))
-          : [...state.stories, story];
+          const stories = existing
+            ? state.stories.map((s) => (s.id === story.id ? story : s))
+            : [...state.stories, story];
 
-        return {
-          stories,
-          currentStoryId: story.id,
+          return {
+            stories,
+            currentStoryId: story.id,
+          };
+        }),
+
+      renameStory: (id, newTitle) =>
+        set((state) => ({
+          stories: state.stories.map((story) =>
+            story.id === id ? { ...story, title: newTitle } : story,
+          ),
+        })),
+
+      setStoryIcon: (id, icon) =>
+        set((state) => ({
+          stories: state.stories.map((story) =>
+            story.id === id ? ({ ...story, icon } as StoryProject) : story,
+          ),
+        })),
+
+      toggleShowSceneTitlesInPlay: () =>
+        set((state) => ({
+          stories: state.stories.map((story) =>
+            story.id === state.currentStoryId
+              ? {
+                  ...story,
+                  showSceneTitlesInPlay: !(story.showSceneTitlesInPlay ?? true),
+                }
+              : story,
+          ),
+        })),
+
+      setBackgroundMusic: (music) =>
+        set((state) => ({
+          stories: state.stories.map((story) =>
+            story.id === state.currentStoryId
+              ? {
+                  ...story,
+                  backgroundMusic: music as any,
+                }
+              : story,
+          ),
+        })),
+
+      removeBackgroundMusic: () =>
+        set((state) => ({
+          stories: state.stories.map((story) =>
+            story.id === state.currentStoryId
+              ? {
+                  ...story,
+                  backgroundMusic: undefined,
+                }
+              : story,
+          ),
+        })),
+
+      addStoryValue: (value) => {
+        const newId = createStoryValueId();
+
+        const newValue: StoryValueDefinition = {
+          id: newId,
+          name: value.name,
+          initialValue: value.initialValue,
+          minValue: value.minValue,
+          maxValue: value.maxValue,
+          step: value.step,
         };
-      }),
-        
-            renameStory: (id, newTitle) =>
-      set((state) => ({
-        stories: state.stories.map((story) =>
-          story.id === id
-            ? { ...story, title: newTitle }
-            : story
-        ),
-      })),
 
-            setStoryIcon: (id, icon) =>
-      set((state) => ({
-        stories: state.stories.map((story) =>
-          story.id === id
-            ? { ...story, icon }
-            : story
-        ),
-      })),
+        set((state) => ({
+          stories: state.stories.map((story) =>
+            story.id === state.currentStoryId
+              ? {
+                  ...story,
+                  storyValues: [...(story.storyValues || []), newValue],
+                }
+              : story,
+          ),
+        }));
 
+        return newId;
+      },
 
-toggleShowSceneTitlesInPlay: () =>
-  set((state) => ({
-    stories: state.stories.map((story) =>
-      story.id === state.currentStoryId
-        ? {
-            ...story,
-            showSceneTitlesInPlay: !(story.showSceneTitlesInPlay ?? true),
-          }
-        : story
-    ),
-  })),
+      deleteStoryValue: (id) =>
+        set((state) => ({
+          stories: state.stories.map((story) =>
+            story.id === state.currentStoryId
+              ? {
+                  ...story,
+                  storyValues: (story.storyValues || []).filter(
+                    (value) => value.id !== id,
+                  ),
+                  scenes: story.scenes.map((scene) => ({
+                    ...scene,
+                    choices: scene.choices.map((choice) => ({
+                      ...choice,
+                      valueChange:
+                        choice.valueChange?.valueId === id
+                          ? undefined
+                          : choice.valueChange,
+                      requiredValue:
+                        choice.requiredValue?.valueId === id
+                          ? undefined
+                          : choice.requiredValue,
+                    })),
+                  })),
+                }
+              : story,
+          ),
+        })),
 
-  setBackgroundMusic: (music) =>
-  set((state) => ({
-    stories: state.stories.map((story) =>
-      story.id === state.currentStoryId
-        ? {
-            ...story,
-            backgroundMusic: music,
-          }
-        : story
-    ),
-  })),
+      exportCurrentStory: () => {
+        const state = get();
+        const currentStory = state.stories.find(
+          (story) => story.id === state.currentStoryId,
+        );
 
-removeBackgroundMusic: () =>
-  set((state) => ({
-    stories: state.stories.map((story) =>
-      story.id === state.currentStoryId
-        ? {
-            ...story,
-            backgroundMusic: undefined,
-          }
-        : story
-    ),
-  })),
+        if (!currentStory) return null;
 
-  addStoryValue: (value) => {
-  const newId = createStoryValueId();
+        return JSON.stringify(currentStory, null, 2);
+      },
 
-  const newValue: StoryValueDefinition = {
-    id: newId,
-    name: value.name,
-    initialValue: value.initialValue,
-    minValue: value.minValue,
-    maxValue: value.maxValue,
-    step: value.step,
-  };
+      exportCurrentStoryAsHtml: () => {
+        const state = get();
+        const currentStory = state.stories.find(
+          (story) => story.id === state.currentStoryId,
+        );
 
-  set((state) => ({
-    stories: state.stories.map((story) =>
-      story.id === state.currentStoryId
-        ? {
-            ...story,
-            storyValues: [...(story.storyValues || []), newValue],
-          }
-        : story
-    ),
-  }));
+        if (!currentStory) return null;
 
-  return newId;
-},
+        const storyJson = JSON.stringify(currentStory);
 
-deleteStoryValue: (id) =>
-  set((state) => ({
-    stories: state.stories.map((story) =>
-      story.id === state.currentStoryId
-        ? {
-            ...story,
-            storyValues: (story.storyValues || []).filter(
-              (value) => value.id !== id
-            ),
-            scenes: story.scenes.map((scene) => ({
-              ...scene,
-              choices: scene.choices.map((choice) => ({
-                ...choice,
-                valueChange:
-                  choice.valueChange?.valueId === id
-                    ? undefined
-                    : choice.valueChange,
-                requiredValue:
-                  choice.requiredValue?.valueId === id
-                    ? undefined
-                    : choice.requiredValue,
-              })),
-            })),
-          }
-        : story
-    ),
-  })),
-
-
-     exportCurrentStory: () => {
-      const state = get();
-      const currentStory = state.stories.find(
-        (story) => story.id === state.currentStoryId
-      );
-
-      if (!currentStory) return null;
-
-      return JSON.stringify(currentStory, null, 2);
-    }, 
-
-
-exportCurrentStoryAsHtml: () => {
-  const state = get();
-  const currentStory = state.stories.find(
-    (story) => story.id === state.currentStoryId
-  );
-
-  if (!currentStory) return null;
-
-  const storyJson = JSON.stringify(currentStory);
-
-  return `<!DOCTYPE html>
+        return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -587,29 +600,29 @@ function restartStory() {
   </div>
 </body>
 </html>`;
-},
+      },
 
-addScene: (scene) => {
-  const newId = scene.id || createSceneId();
+      addScene: (scene) => {
+        const newId = scene.id || createSceneId();
 
-  const newScene = {
-    ...scene,
-    id: newId,
-  };
+        const newScene = {
+          ...scene,
+          id: newId,
+        };
 
-  set((state) => ({
-    stories: state.stories.map((story) =>
-      story.id === state.currentStoryId
-        ? {
-            ...story,
-            scenes: [...story.scenes, newScene],
-          }
-        : story
-    ),
-  }));
+        set((state) => ({
+          stories: state.stories.map((story) =>
+            story.id === state.currentStoryId
+              ? {
+                  ...story,
+                  scenes: [...story.scenes, newScene],
+                }
+              : story,
+          ),
+        }));
 
-  return newId;
-},
+        return newId;
+      },
 
       updateScene: (index, scene) =>
         set((state) => ({
@@ -619,7 +632,7 @@ addScene: (scene) => {
                   ...story,
                   scenes: story.scenes.map((s, i) => (i === index ? scene : s)),
                 }
-              : story
+              : story,
           ),
         })),
 
@@ -636,30 +649,29 @@ addScene: (scene) => {
                       choices: scene.choices.map((choice) =>
                         choice.targetSceneId === id
                           ? { ...choice, targetSceneId: undefined }
-                          : choice
+                          : choice,
                       ),
                     })),
                 }
-              : story
+              : story,
           ),
         })),
 
-
-        toggleSceneDone: (id) =>
-  set((state) => ({
-    stories: state.stories.map((story) =>
-      story.id === state.currentStoryId
-        ? {
-            ...story,
-            scenes: story.scenes.map((scene) =>
-              scene.id === id
-                ? { ...scene, isDone: !scene.isDone }
-                : scene
-            ),
-          }
-        : story
-    ),
-  })),
+      toggleSceneDone: (id) =>
+        set((state) => ({
+          stories: state.stories.map((story) =>
+            story.id === state.currentStoryId
+              ? {
+                  ...story,
+                  scenes: story.scenes.map((scene) =>
+                    scene.id === id
+                      ? { ...scene, isDone: !scene.isDone }
+                      : scene,
+                  ),
+                }
+              : story,
+          ),
+        })),
 
       getCurrentStory: () => {
         const state = get();
@@ -667,66 +679,65 @@ addScene: (scene) => {
       },
 
       loadDemoStory: () => {
-        const demoStory = {
-          id: 'demo-goose-story',
-          title: 'Goose Story',
-          mode: 'personal',
-          icon: '🪿',
+        const demoStory: StoryProject = {
+          id: "demo-goose-story",
+          title: "Goose Story",
+          mode: "personal",
           scenes: [
-  {
-    id: 'goose',
-    title: 'Goose',
-    text: 'You are a goose near a quiet pond.',
-    choices: [
-      {
-        id: 'choice-look-at-pond',
-        label: 'Look at pond',
-        targetSceneId: 'pond',
-        rememberChoice: true,
-      },
-      {
-        id: 'choice-walk-into-forest',
-        label: 'Walk into forest',
-        targetSceneId: 'forest',
-        rememberChoice: true,
-      },
-    ],
-    assets: [],
-  },
-  {
-    id: 'pond',
-    title: 'Pond',
-    text: 'The pond is calm and full of mysterious ripples.',
-    choices: [
-      {
-        id: 'choice-go-back-to-goose',
-        label: 'Go back to goose place',
-        targetSceneId: 'goose',
-      },
-    ],
-    assets: [],
-  },
-  {
-    id: 'forest',
-    title: 'Forest',
-    text: 'The forest is dark, wet, and smells like moss.',
-    choices: [
-      {
-        id: 'choice-return-to-pond',
-        label: 'Return to pond',
-        targetSceneId: 'pond',
-      },
-      {
-        id: 'choice-remember-the-pond',
-        label: 'Remember the pond',
-        targetSceneId: 'pond',
-        requiredChoiceId: 'choice-look-at-pond',
-      },
-    ],
-    assets: [],
-  },
-],
-        } as StoryProject & { icon?: string };
+            {
+              id: "goose",
+              title: "Goose",
+              text: "You are a goose near a quiet pond.",
+              choices: [
+                {
+                  id: "choice-look-at-pond",
+                  label: "Look at pond",
+                  targetSceneId: "pond",
+                  rememberChoice: true,
+                },
+                {
+                  id: "choice-walk-into-forest",
+                  label: "Walk into forest",
+                  targetSceneId: "forest",
+                  rememberChoice: true,
+                },
+              ],
+              assets: [],
+            },
+            {
+              id: "pond",
+              title: "Pond",
+              text: "The pond is calm and full of mysterious ripples.",
+              choices: [
+                {
+                  id: "choice-go-back-to-goose",
+                  label: "Go back to goose place",
+                  targetSceneId: "goose",
+                },
+              ],
+              assets: [],
+            },
+            {
+              id: "forest",
+              title: "Forest",
+              text: "The forest is dark, wet, and smells like moss.",
+              choices: [
+                {
+                  id: "choice-return-to-pond",
+                  label: "Return to pond",
+                  targetSceneId: "pond",
+                },
+                {
+                  id: "choice-remember-the-pond",
+                  label: "Remember the pond",
+                  targetSceneId: "pond",
+                  requiredChoiceId: "choice-look-at-pond",
+                },
+              ],
+              assets: [],
+            },
+          ],
+        };
 
         set((state) => {
           const existing = state.stories.find((s) => s.id === demoStory.id);
@@ -742,14 +753,14 @@ addScene: (scene) => {
       },
     }),
     {
-      name: 'storypaths-storage-v9',
+      name: "storypaths-storage-v9",
       storage: createJSONStorage(() => universalStorage),
       onRehydrateStorage: () => (state, error) => {
         if (error) {
-          console.error('Zustand Hydration Error:', error);
+          console.error("Zustand Hydration Error:", error);
         }
         state?.setHasHydrated(true);
       },
-    }
-  )
+    },
+  ),
 );

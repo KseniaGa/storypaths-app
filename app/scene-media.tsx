@@ -527,7 +527,7 @@ const pickAudio = async () => {
     style={styles.buttonSecondary}
     onPress={() => openDrawingPad()}
   >
-    <Text style={styles.buttonSecondaryText}>Add another drawing ✏️</Text>
+    <Text style={styles.buttonSecondaryText}>Add a drawing</Text>
   </Pressable>
 
   {firstDrawingAsset && (

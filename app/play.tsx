@@ -4,6 +4,40 @@ import { useStoryStore } from '../store/storyStore';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 
+const BUILT_IN_BACKGROUND_MUSIC = [
+  {
+    id: "soft-hip-hop",
+    asset: require("../assets/audio/soft-hip-hop.mp3"),
+  },
+
+  {
+    id: "piano-remix",
+    asset: require("../assets/audio/piano-remix.mp3"),
+  },
+  {
+    id: "game-music",
+    asset: require("../assets/audio/game-music.mp3"),
+  },
+  {
+    id: "thriller-score",
+    asset: require("../assets/audio/thriller-score.mp3"),
+  },
+];
+
+const getBackgroundMusicSource = (music: any) => {
+  if (!music) return null;
+
+  if (music.type === 'built-in' && music.builtInId) {
+    return (
+      BUILT_IN_BACKGROUND_MUSIC.find((track) => track.id === music.builtInId)
+        ?.asset ?? null
+    );
+  }
+
+  return music.uri ?? null;
+};
+
+
 export default function PlayScreen() {
   const currentStory = useStoryStore((state) => state.getCurrentStory());
   const title = currentStory?.title || 'Untitled story';
@@ -149,7 +183,7 @@ const formatStoryValuesForDebug = () => {
 const player = useAudioPlayer(audioAsset?.uri ?? null);
 const audioStatus = useAudioPlayerStatus(player);
 
-const backgroundPlayer = useAudioPlayer(backgroundMusic?.uri ?? null);
+const backgroundPlayer = useAudioPlayer(getBackgroundMusicSource(backgroundMusic));
 const backgroundStatus = useAudioPlayerStatus(backgroundPlayer);
 
 useEffect(() => {
@@ -286,6 +320,8 @@ return (
           if (audioStatus.playing) {
             player.pause();
           } else {
+            // Reset first so scene audio can be played again after it finishes.
+            (player as any).seekTo?.(0);
             player.play();
           }
         }}
