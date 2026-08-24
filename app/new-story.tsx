@@ -3,10 +3,13 @@ import { useState } from 'react';
 import { router } from 'expo-router';
 import { useStoryStore } from '../store/storyStore';
 import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system/legacy';
+import { validateStoryImport } from '../utils/storyData';
+import { readPickedTextFile } from '../utils/platformFiles';
+import { STORY_ICON_PRESETS } from '../data/storyContent';
 
 export default function NewStoryScreen() {
   const [title, setTitle] = useState('');
+  const [selectedIcon, setSelectedIcon] = useState(STORY_ICON_PRESETS[0]);
   const createStory = useStoryStore((state) => state.createStory);
   const importStory = useStoryStore((state) => state.importStory);
 
@@ -15,6 +18,7 @@ export default function NewStoryScreen() {
       const result = await DocumentPicker.getDocumentAsync({
         type: 'application/json',
         copyToCacheDirectory: true,
+        base64: false,
       });
 
       if (result.canceled) return;
@@ -22,16 +26,17 @@ export default function NewStoryScreen() {
       const file = result.assets[0];
       if (!file?.uri) return;
 
-      const jsonString = await FileSystem.readAsStringAsync(file.uri);
+      const jsonString = await readPickedTextFile(file);
       const parsed = JSON.parse(jsonString);
 
-      if (!parsed.id || !parsed.title || !Array.isArray(parsed.scenes)) {
-        Alert.alert('Import failed', 'This file does not look like a valid Branch Beetle story JSON.');
+      const validation = validateStoryImport(parsed);
+      if (!validation.valid) {
+        Alert.alert('Import failed', validation.message);
         return;
       }
 
       importStory(parsed);
-      Alert.alert('Import successful', `"${parsed.title}" was imported.`);
+      Alert.alert('Import successful', `"${parsed.title || "Untitled story"}" was imported.`);
       router.push('/story');
     } catch (error) {
       console.error('Import error:', error);
@@ -40,7 +45,7 @@ export default function NewStoryScreen() {
   };
 
   const handleCreateStory = () => {
-    createStory(title.trim() || 'Untitled story', 'fictional');
+    createStory(title.trim() || 'Untitled story', 'fictional', selectedIcon);
     router.push('/story');
   };
 
@@ -74,8 +79,27 @@ export default function NewStoryScreen() {
           onChangeText={setTitle}
         />
 
+        <Text style={styles.iconLabel}>Story icon</Text>
+        <View style={styles.iconGrid}>
+          {STORY_ICON_PRESETS.map((icon) => (
+            <Pressable
+              key={icon}
+              style={[
+                styles.iconChoice,
+                selectedIcon === icon && styles.iconChoiceSelected,
+              ]}
+              onPress={() => setSelectedIcon(icon)}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: selectedIcon === icon }}
+              accessibilityLabel={`Use ${icon} as the story icon`}
+            >
+              <Text style={styles.iconChoiceText}>{icon}</Text>
+            </Pressable>
+          ))}
+        </View>
+
         <View style={styles.previewTile}>
-          <Text style={styles.previewIcon}>🪲</Text>
+          <Text style={styles.previewIcon}>{selectedIcon}</Text>
           <View style={{ flex: 1 }}>
             <Text style={styles.previewLabel}>Preview</Text>
             <Text style={styles.previewTitle}>{title.trim() || 'Untitled story'}</Text>
@@ -95,7 +119,15 @@ export default function NewStoryScreen() {
 
       <Pressable
         style={styles.secondaryButton}
-        onPress={() => router.push('/templates')}
+        onPress={() =>
+          router.push({
+            pathname: '/templates',
+            params: {
+              storyTitle: title.trim() || 'Untitled story',
+              storyIcon: selectedIcon,
+            },
+          })
+        }
       >
         <Text style={styles.secondaryButtonText}>Choose a template</Text>
       </Pressable>
@@ -196,6 +228,37 @@ const styles = StyleSheet.create({
     color: '#2A251D',
     backgroundColor: '#FFFDF7',
     fontWeight: '700',
+  },
+  iconLabel: {
+    fontSize: 15,
+    fontWeight: '900',
+    color: '#2A251D',
+    marginTop: 2,
+    marginBottom: 9,
+  },
+  iconGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 14,
+  },
+  iconChoice: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#D8CCAA',
+    backgroundColor: '#FFFDF7',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconChoiceSelected: {
+    borderWidth: 2,
+    borderColor: '#247322',
+    backgroundColor: '#E9F2DD',
+  },
+  iconChoiceText: {
+    fontSize: 23,
   },
   previewTile: {
     flexDirection: 'row',

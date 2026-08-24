@@ -9,17 +9,121 @@ import {
   Platform,
   Alert,
   BackHandler,
+  Modal,
 } from "react-native";
 import { useLocalSearchParams, router, Stack } from "expo-router";
 import { useState, useEffect, useRef } from "react";
+import * as DocumentPicker from "expo-document-picker";
+import * as FileSystem from "expo-file-system/legacy";
 import { useStoryStore } from "../store/storyStore";
+import type {
+  BackgroundMusic,
+  RichTextFormat,
+  ScenePlaySettingsOverride,
+} from "../types/story";
+import {
+  clearScrollPosition,
+  getScrollPosition,
+  rememberScrollPosition,
+} from "../utils/scrollMemory";
+import { getChoiceValueChanges } from "../utils/storyValueChanges";
+import {
+  PLAY_FONT_OPTIONS,
+  PLAY_TEXT_SIZE_OPTIONS,
+  PLAY_THEMES,
+  getStoryPlayAppearance,
+} from "../utils/playAppearance";
+import {
+  getRichTextDocument,
+  parseRichText,
+  toggleRichTextFormatting,
+  updateRichTextFormattingForEdit,
+} from "../utils/richText";
+
+const SHOW_WRITING_HINTS = false;
+
+const SCENE_BACKGROUND_MUSIC = [
+  {
+    id: "soft-hip-hop",
+    title: "Soft Branch",
+  },
+  {
+    id: "piano-remix",
+    title: "Tiny Piano",
+  },
+  {
+    id: "game-music",
+    title: "Gentle Game Theme",
+  },
+  {
+    id: "thriller-score",
+    title: "Thriller Score",
+  },
+];
+
+function SignedAmountInput({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (amount: number) => void;
+}) {
+  const [text, setText] = useState(String(value));
+
+  useEffect(() => {
+    setText(String(value));
+  }, [value]);
+
+  return (
+    <TextInput
+      style={styles.valueChangeAmountInput}
+      value={text}
+      onChangeText={(nextText) => {
+        setText(nextText);
+        if (/^-?\d+$/.test(nextText)) onChange(Number(nextText));
+      }}
+      onBlur={() => {
+        if (!/^-?\d+$/.test(text)) setText(String(value));
+      }}
+      keyboardType="numbers-and-punctuation"
+      selectTextOnFocus
+      accessibilityLabel="Story value change amount"
+    />
+  );
+}
 
 export default function SceneEditorScreen() {
-  const { sceneId, parentSceneId, choiceIndex, returnSceneId } =
-    useLocalSearchParams();
+  const {
+    sceneId,
+    parentSceneId,
+    choiceIndex,
+    choiceId,
+    returnSceneId,
+    restoreScroll,
+    createdFromChoice,
+    createdFromScene,
+  } = useLocalSearchParams();
+
+  const requestedSceneId = typeof sceneId === "string" ? sceneId : undefined;
+  const requestedParentSceneId =
+    typeof parentSceneId === "string" ? parentSceneId : undefined;
+  const requestedChoiceId = typeof choiceId === "string" ? choiceId : undefined;
+  const createdFromChoiceLabel =
+    typeof createdFromChoice === "string" && createdFromChoice.trim()
+      ? createdFromChoice.trim()
+      : undefined;
+  const createdFromSceneTitle =
+    typeof createdFromScene === "string" && createdFromScene.trim()
+      ? createdFromScene.trim()
+      : undefined;
 
   const createChoiceId = () =>
     `choice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  const createDialogueTurnId = () =>
+    `dialogue-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  const showDialogueSceneOption = false;
 
   const getStoryValueOperatorLabel = (operator?: string) => {
     if (operator === "atMost") return "is at most";
@@ -39,19 +143,35 @@ export default function SceneEditorScreen() {
 
   const addScene = useStoryStore((state) => state.addScene);
   const updateScene = useStoryStore((state) => state.updateScene);
+  const createSceneFromChoice = useStoryStore(
+    (state) => state.createSceneFromChoice,
+  );
 
   const scrollRef = useRef<ScrollView>(null);
-  const hasAutoCreatedFromChoice = useRef(false);
+  const sceneTextInputRef = useRef<TextInput>(null);
+  const currentScrollY = useRef(0);
+  const pendingRestoreY = useRef<number | null>(null);
+  const navigationPending = useRef(false);
+  const autoCreatedChoiceRequest = useRef<string | null>(null);
+  const autoSaveGeneration = useRef(0);
+  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const safeBackNavigation = useRef<() => void>(() => {});
+  const connectionConfirmationTimer =
+    useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [expandedChoiceIndex, setExpandedChoiceIndex] = useState<number | null>(
     null,
   );
 
-  const [saveStatus, setSaveStatus] = useState<"idle" | "saved">("idle");
+  const [saveStatus, setSaveStatus] = useState<
+    "idle" | "saving" | "saved" | "error"
+  >("idle");
 
-  const [expandedLogicChoiceIndex, setExpandedLogicChoiceIndex] = useState<
-    number | null
-  >(null);
+  const [activeChoiceLogicIndex, setActiveChoiceLogicIndex] = useState<number | null>(null);
+  const [connectionConfirmation, setConnectionConfirmation] = useState<{
+    choiceKey: string;
+    destination: string;
+  } | null>(null);
 
   const showChoiceInfo = () => {
     Alert.alert(
@@ -60,75 +180,146 @@ export default function SceneEditorScreen() {
     );
   };
 
-  const showStoryTraceInfo = () => {
+  const showStartSceneInfo = () => {
     Alert.alert(
-      "Story trace ✨",
-      "A story trace records something the player did or experienced. For example, the player picked up a key, helped a character, made a promise, or visited a place. Story traces let later parts of the story react to earlier choices.",
+      "Start scene",
+      "This is where the story begins. By default, the first scene you create is the start scene. You can reassign the start scene from the Story screen.",
     );
   };
 
-  const showStoryValueInfo = () => {
+  const showEndingSceneInfo = () => {
     Alert.alert(
-      "Story value 🫐",
-      "A story value keeps track of something that can increase or decrease, like coins, berries, trust, energy, hope, or suspicion.",
+      "Ending scene",
+      "Scenes with no choices are endings. Add a choice if the story should continue from this scene.",
     );
   };
 
-  const showConditionalChoiceInfo = () => {
+  const showChoiceVisibilityInfo = () => {
     Alert.alert(
-      "Conditional choice",
-      "A conditional choice is a choice the player only sees if the story has the right story trace or story value. For example, “Open the locked door” might only appear if the player has found the key.",
+      "Choice visibility",
+      "Choice visibility controls when a player can see this choice. It can always appear, depend on a remembered choice, or depend on a story value.",
     );
   };
 
-  const existingScene =
-    sceneId !== undefined && sceneId !== ""
-      ? scenes.find((scene) => scene.id === sceneId)
-      : undefined;
+  const showChoiceConsequenceInfo = () => {
+    Alert.alert(
+      "Choice consequence",
+      "Choice consequence controls what changes after the player chooses this option, such as remembering the choice or changing a story value.",
+    );
+  };
+
+  const showSceneMediaInfo = () => {
+    Alert.alert(
+      "Scene media",
+      "Add images, drawings, audio, or voice notes to this scene. The scene saves first so the media has somewhere to live.",
+    );
+  };
+
+
+  const existingScene = requestedSceneId
+    ? scenes.find((scene) => scene.id === requestedSceneId)
+    : undefined;
+  const editorHint = existingScene
+    ? currentStory?.editorHints?.[existingScene.id]
+    : undefined;
 
   const returnScene =
     typeof returnSceneId === "string"
       ? scenes.find((scene) => scene.id === returnSceneId)
       : undefined;
 
-  const parentScene =
-    typeof parentSceneId === "string"
-      ? scenes.find((scene) => scene.id === parentSceneId)
-      : undefined;
+  const parentScene = requestedParentSceneId
+    ? scenes.find((scene) => scene.id === requestedParentSceneId)
+    : undefined;
 
   const parentChoiceNumber =
     typeof choiceIndex === "string" ? Number(choiceIndex) : undefined;
 
+  const parentChoiceIndex = parentScene
+    ? requestedChoiceId
+      ? parentScene.choices.findIndex((choice) => choice.id === requestedChoiceId)
+      : parentChoiceNumber !== undefined && !Number.isNaN(parentChoiceNumber)
+        ? parentChoiceNumber
+        : -1
+    : -1;
+
   const parentChoice =
-    parentScene &&
-    parentChoiceNumber !== undefined &&
-    !Number.isNaN(parentChoiceNumber)
-      ? parentScene.choices[parentChoiceNumber]
+    parentScene && parentChoiceIndex >= 0
+      ? parentScene.choices[parentChoiceIndex]
       : undefined;
+
+  const getSceneDisplayName = (scene: (typeof scenes)[number]) => {
+    const sceneIndex = scenes.findIndex((item) => item.id === scene.id);
+    const sceneNumber = sceneIndex >= 0 ? sceneIndex + 1 : "?";
+    const cleanTitle = scene.title?.trim();
+    return `Scene ${sceneNumber} · ${cleanTitle || "Untitled"}`;
+  };
 
   const [sceneTitle, setSceneTitle] = useState("");
   const [sceneText, setSceneText] = useState("");
+  const [sceneTextFormatting, setSceneTextFormatting] = useState<
+    RichTextFormat[]
+  >([]);
+  const [sceneTextSelection, setSceneTextSelection] = useState({
+    start: 0,
+    end: 0,
+  });
+  const [sceneType, setSceneType] = useState<"story" | "dialogue">("story");
+  const [dialogueTurns, setDialogueTurns] = useState<any[]>([]);
 
   const [choices, setChoices] = useState(existingScene?.choices || []);
+  const choicesRef = useRef(existingScene?.choices || []);
 
   const [newChoice, setNewChoice] = useState("");
+  const [isAddingChoice, setIsAddingChoice] = useState(false);
 
   const [assets, setAssets] = useState(existingScene?.assets || []);
+  const [scenePlaySettingsOverride, setScenePlaySettingsOverride] =
+    useState<ScenePlaySettingsOverride | undefined>(
+      existingScene?.playSettingsOverride,
+    );
+  const isOpeningScene = existingScene
+    ? scenes[0]?.id === existingScene.id
+    : scenes.length === 0;
 
   useEffect(() => {
     if (sceneId !== undefined && sceneId !== "") {
       setSceneTitle(existingScene?.title || "");
-      setSceneText(existingScene?.text || "");
-      setChoices(existingScene?.choices || []);
+      const richTextDocument = getRichTextDocument(
+        existingScene?.text || "",
+        existingScene?.textFormatting,
+      );
+      setSceneText(richTextDocument.text);
+      setSceneTextFormatting(richTextDocument.formatting);
+      setSceneTextSelection({ start: 0, end: 0 });
+      setSceneType(existingScene?.sceneType === "dialogue" ? "dialogue" : "story");
+      setDialogueTurns(existingScene?.dialogueTurns || []);
+      const nextChoices = existingScene?.choices || [];
+      choicesRef.current = nextChoices;
+      setChoices(nextChoices);
       setAssets(existingScene?.assets || []);
+      setScenePlaySettingsOverride(existingScene?.playSettingsOverride);
     } else {
       setSceneTitle("");
       setSceneText("");
+      setSceneTextFormatting([]);
+      setSceneTextSelection({ start: 0, end: 0 });
+      setSceneType("story");
+      setDialogueTurns([]);
+      choicesRef.current = [];
       setChoices([]);
       setAssets([]);
+      setScenePlaySettingsOverride(undefined);
     }
     setNewChoice("");
-  }, [sceneId, existingScene]);
+    setIsAddingChoice(false);
+  }, [sceneId, existingScene?.id]);
+
+  useEffect(() => {
+    if (existingScene?.assets) {
+      setAssets(existingScene.assets);
+    }
+  }, [existingScene?.assets]);
 
   const rememberedChoices = scenes.flatMap((scene) =>
     scene.choices
@@ -136,7 +327,7 @@ export default function SceneEditorScreen() {
       .map((choice) => ({
         id: choice.id!,
         sceneTitle: scene.title || "Untitled scene",
-        choiceLabel: choice.label || "(empty choice)",
+        choiceLabel: choice.memoryName || choice.label || "(empty choice)",
       })),
   );
 
@@ -145,7 +336,7 @@ export default function SceneEditorScreen() {
     .map((choice) => ({
       id: choice.id!,
       sceneTitle: sceneTitle || "This scene",
-      choiceLabel: choice.label || "(empty choice)",
+      choiceLabel: choice.memoryName || choice.label || "(empty choice)",
     }));
 
   const availableRememberedChoices = Array.from(
@@ -159,8 +350,6 @@ export default function SceneEditorScreen() {
 
   const storyValueDefinitions = currentStory?.storyValues || [];
 
-  const hasStoryValues = storyValueDefinitions.length > 0;
-
   const findStoryValueDefinition = (value?: {
     valueId?: string;
     name?: string;
@@ -173,51 +362,249 @@ export default function SceneEditorScreen() {
   const formatSignedAmount = (amount: number) =>
     `${amount >= 0 ? "+" : ""}${amount}`;
 
-  const clampNumber = (value: number, min: number, max: number) =>
-    Math.max(min, Math.min(max, value));
+  const createMemoryName = (label: string) => {
+    const memoryName = label
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
 
-  const getCleanSceneTitle = () => sceneTitle.trim() || "Untitled scene";
+    return memoryName || "remembered_choice";
+  };
 
-  const hasDuplicateSceneTitle = (
-    candidateTitle: string,
-    currentSceneId?: string,
-  ) =>
-    scenes.some((scene) => {
-      const sameScene = currentSceneId && scene.id === currentSceneId;
-      return (
-        !sameScene &&
-        scene.title.trim().toLowerCase() === candidateTitle.trim().toLowerCase()
-      );
-    });
+  const getChoiceMemoryName = (choice: any) =>
+    choice.memoryName?.trim() || createMemoryName(choice.label || "remembered choice");
 
-  const saveCurrentScene = (): { sceneId: string; wasNew: boolean } | null => {
-    const cleanTitle = getCleanSceneTitle();
-    const currentSceneId = existingScene?.id;
-
-    if (hasDuplicateSceneTitle(cleanTitle, currentSceneId)) {
-      Alert.alert(
-        "Scene name already exists",
-        "Another scene already has this name. Please choose a different scene name.",
-      );
-      return null;
+  const persistChoices = (
+    updater: any[] | ((currentChoices: any[]) => any[]),
+  ) => {
+    autoSaveGeneration.current += 1;
+    if (autoSaveTimer.current) {
+      clearTimeout(autoSaveTimer.current);
+      autoSaveTimer.current = null;
     }
 
-    if (existingScene) {
-      const existingIndex = scenes.findIndex(
-        (scene) => scene.id === existingScene.id,
-      );
+    const nextChoices =
+      typeof updater === "function"
+        ? updater(choicesRef.current)
+        : updater;
 
-      if (existingIndex === -1) {
-        Alert.alert("Could not save scene", "This scene could not be found.");
+    choicesRef.current = nextChoices;
+    setChoices(nextChoices);
+
+    if (existingScene) {
+      setSaveStatus("saving");
+      try {
+        updateScene(existingScene.id, { choices: nextChoices });
+        requestAnimationFrame(() => setSaveStatus("saved"));
+      } catch (error) {
+        console.error("Choice autosave error:", error);
+        setSaveStatus("error");
+      }
+    }
+  };
+
+  const updateChoiceAt = (index: number, updater: (choice: any) => any) => {
+    persistChoices((currentChoices) =>
+      currentChoices.map((currentChoice, choiceIndex) =>
+        choiceIndex === index ? updater(currentChoice) : currentChoice,
+      ),
+    );
+  };
+
+  const connectChoiceToScene = (
+    choice: any,
+    choiceIndex: number,
+    destinationScene: (typeof scenes)[number],
+  ) => {
+    const applyConnection = () => {
+      updateChoiceAt(choiceIndex, (currentChoice) => ({
+        ...currentChoice,
+        targetSceneId: destinationScene.id,
+      }));
+      setExpandedChoiceIndex(null);
+
+      if (connectionConfirmationTimer.current) {
+        clearTimeout(connectionConfirmationTimer.current);
+      }
+      setConnectionConfirmation({
+        choiceKey: choice.id || String(choiceIndex),
+        destination: getSceneDisplayName(destinationScene),
+      });
+      connectionConfirmationTimer.current = setTimeout(() => {
+        setConnectionConfirmation(null);
+        connectionConfirmationTimer.current = null;
+      }, 4000);
+    };
+
+    if (destinationScene.id === existingScene?.id) {
+      Alert.alert(
+        "Link back to this scene?",
+        "This creates a loop. In Play mode, this choice will return to the same scene.",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Create loop", onPress: applyConnection },
+        ],
+      );
+      return;
+    }
+
+    applyConnection();
+  };
+
+  useEffect(
+    () => () => {
+      if (connectionConfirmationTimer.current) {
+        clearTimeout(connectionConfirmationTimer.current);
+      }
+    },
+    [],
+  );
+
+  const moveChoice = (index: number, offset: -1 | 1) => {
+    persistChoices((currentChoices) => {
+      const destinationIndex = index + offset;
+      if (destinationIndex < 0 || destinationIndex >= currentChoices.length) {
+        return currentChoices;
+      }
+
+      const reorderedChoices = [...currentChoices];
+      [reorderedChoices[index], reorderedChoices[destinationIndex]] = [
+        reorderedChoices[destinationIndex],
+        reorderedChoices[index],
+      ];
+      return reorderedChoices;
+    });
+    setExpandedChoiceIndex(null);
+    setActiveChoiceLogicIndex(null);
+  };
+
+  const formatSelectedSceneText = (
+    style: "bold" | "italic" | "underline",
+  ) => {
+    const { start, end } = sceneTextSelection;
+    if (start === end) return;
+
+    setSceneTextFormatting((current) =>
+      toggleRichTextFormatting(sceneText, current, start, end, style),
+    );
+    requestAnimationFrame(() => sceneTextInputRef.current?.focus());
+  };
+
+  const updateSceneText = (nextText: string) => {
+    setSceneTextFormatting((current) =>
+      updateRichTextFormattingForEdit(sceneText, nextText, current),
+    );
+    setSceneText(nextText);
+  };
+
+  const enableSceneAppearanceOverride = () => {
+    setScenePlaySettingsOverride({
+      playAppearance: getStoryPlayAppearance(currentStory),
+      backgroundMusic: currentStory?.backgroundMusic
+        ? { ...currentStory.backgroundMusic }
+        : null,
+    });
+  };
+
+  const updateSceneAppearance = (
+    update: Partial<ScenePlaySettingsOverride["playAppearance"]>,
+  ) => {
+    setScenePlaySettingsOverride((current) =>
+      current
+        ? {
+            ...current,
+            playAppearance: {
+              ...current.playAppearance,
+              ...update,
+            },
+          }
+        : current,
+    );
+  };
+
+  const setSceneBackgroundMusic = (music: BackgroundMusic | null) => {
+    setScenePlaySettingsOverride((current) =>
+      current ? { ...current, backgroundMusic: music } : current,
+    );
+  };
+
+  const uploadSceneBackgroundMusic = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: "audio/*",
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.[0]) return;
+
+      const pickedFile = result.assets[0];
+      const safeName =
+        pickedFile.name?.replace(/[^a-z0-9._-]/gi, "_") ||
+        `scene-background-${Date.now()}.mp3`;
+      const destinationUri =
+        FileSystem.documentDirectory +
+        `scene-background-${Date.now()}-${safeName}`;
+
+      await FileSystem.copyAsync({
+        from: pickedFile.uri,
+        to: destinationUri,
+      });
+
+      setSceneBackgroundMusic({
+        type: "uploaded",
+        uri: destinationUri,
+        name: pickedFile.name || "Scene background music",
+      });
+    } catch (error) {
+      console.error("Scene background music picker error:", error);
+      Alert.alert(
+        "Could not add music",
+        "Please try choosing another audio file.",
+      );
+    }
+  };
+
+  const sceneBackgroundMusicName = (() => {
+    const music = scenePlaySettingsOverride?.backgroundMusic;
+    if (!music) return "No music for this scene";
+    if (music.type === "built-in") {
+      return (
+        SCENE_BACKGROUND_MUSIC.find((track) => track.id === music.builtInId)
+          ?.title ||
+        music.name ||
+        "Built-in music"
+      );
+    }
+    return music.name || "Uploaded music";
+  })();
+
+  const getRequiredChoiceState = (choice: any) =>
+    choice.requiredChoiceState === "notRemembered" ? "notRemembered" : "remembered";
+
+  const getCleanSceneTitle = () => sceneTitle.trim();
+
+  const writeCurrentScene = (
+    options: { showAlerts?: boolean } = {},
+  ): { sceneId: string; wasNew: boolean } | null => {
+    const { showAlerts = true } = options;
+    const cleanTitle = getCleanSceneTitle();
+    if (existingScene) {
+      if (!scenes.some((scene) => scene.id === existingScene.id)) {
+        if (showAlerts) {
+          Alert.alert("Could not save scene", "This scene could not be found.");
+        }
         return null;
       }
 
-      updateScene(existingIndex, {
-        id: existingScene.id,
+      updateScene(existingScene.id, {
         title: cleanTitle,
         text: sceneText || "",
-        choices,
+        textFormatting: sceneTextFormatting,
+        sceneType,
+        dialogueTurns,
+        choices: choicesRef.current,
         assets,
+        playSettingsOverride: scenePlaySettingsOverride,
         isDone: existingScene.isDone,
       });
 
@@ -228,93 +615,99 @@ export default function SceneEditorScreen() {
       id: "",
       title: cleanTitle,
       text: sceneText || "",
-      choices,
+      textFormatting: sceneTextFormatting,
+      sceneType,
+      dialogueTurns,
+      choices: choicesRef.current,
       assets,
+      playSettingsOverride: scenePlaySettingsOverride,
     });
 
-    if (parentSceneId && choiceIndex !== undefined) {
-      const parentIndex = scenes.findIndex(
-        (scene) => scene.id === parentSceneId,
-      );
-
-      if (parentIndex !== -1) {
-        const parentScene = scenes[parentIndex];
-        const updatedChoices = [...parentScene.choices];
-
-        updatedChoices[Number(choiceIndex)] = {
-          ...updatedChoices[Number(choiceIndex)],
-          targetSceneId: newSceneId,
-        };
-
-        updateScene(parentIndex, {
-          ...parentScene,
-          choices: updatedChoices,
-        });
-      }
+    if (requestedParentSceneId && parentChoiceIndex >= 0) {
+      updateScene(requestedParentSceneId, (latestParentScene) => ({
+        ...latestParentScene,
+        choices: latestParentScene.choices.map((choice, index) =>
+          (requestedChoiceId && choice.id === requestedChoiceId) ||
+          (!requestedChoiceId && index === parentChoiceIndex)
+            ? { ...choice, targetSceneId: newSceneId }
+            : choice,
+        ),
+      }));
     }
 
     return { sceneId: newSceneId, wasNew: true };
   };
 
+  const saveCurrentScene = (
+    options: { showAlerts?: boolean } = {},
+  ): { sceneId: string; wasNew: boolean } | null => {
+    try {
+      return writeCurrentScene(options);
+    } catch (error) {
+      console.error("Scene autosave error:", error);
+      setSaveStatus("error");
+      if (options.showAlerts !== false) {
+        Alert.alert(
+          "Could not save scene",
+          "Your changes are still in the editor. Please try again.",
+        );
+      }
+      return null;
+    }
+  };
+
   useEffect(() => {
-    if (hasAutoCreatedFromChoice.current) return;
     if (existingScene) return;
-    if (!parentScene || typeof parentSceneId !== "string") return;
-    if (parentChoiceNumber === undefined || Number.isNaN(parentChoiceNumber))
-      return;
+    if (!parentScene || !requestedParentSceneId || parentChoiceIndex < 0) return;
 
-    hasAutoCreatedFromChoice.current = true;
+    const requestKey = `${requestedParentSceneId}:${requestedChoiceId || parentChoiceIndex}`;
+    if (autoCreatedChoiceRequest.current === requestKey) return;
+    autoCreatedChoiceRequest.current = requestKey;
 
-    if (parentChoice?.targetSceneId) {
+    const validTargetScene = parentChoice?.targetSceneId
+      ? scenes.find((scene) => scene.id === parentChoice.targetSceneId)
+      : undefined;
+
+    if (validTargetScene) {
       router.replace({
         pathname: "/scene-editor",
         params: {
-          sceneId: parentChoice.targetSceneId,
-          returnSceneId: parentSceneId,
+          sceneId: validTargetScene.id,
+          returnSceneId: requestedParentSceneId,
         },
       });
       return;
     }
 
-    const newSceneId = addScene({
-      id: "",
-      title: "Untitled scene",
-      text: "",
-      choices: [],
-      assets: [],
-    });
-
-    const parentIndex = scenes.findIndex((scene) => scene.id === parentSceneId);
-
-    if (parentIndex !== -1) {
-      const updatedParentScene = scenes[parentIndex];
-      const updatedChoices = [...updatedParentScene.choices];
-
-      updatedChoices[parentChoiceNumber] = {
-        ...updatedChoices[parentChoiceNumber],
-        targetSceneId: newSceneId,
-      };
-
-      updateScene(parentIndex, {
-        ...updatedParentScene,
-        choices: updatedChoices,
-      });
+    const newSceneId = createSceneFromChoice(
+      requestedParentSceneId,
+      requestedChoiceId,
+      parentChoiceIndex,
+    );
+    if (!newSceneId) {
+      autoCreatedChoiceRequest.current = null;
+      return;
     }
 
     router.replace({
       pathname: "/scene-editor",
       params: {
         sceneId: newSceneId,
-        returnSceneId: parentSceneId,
+        returnSceneId: requestedParentSceneId,
+        createdFromChoice: parentChoice?.label || "(empty choice)",
+        createdFromScene: parentScene.title || "Untitled scene",
       },
     });
   }, [
     addScene,
+    createSceneFromChoice,
     existingScene,
+    parentChoice?.label,
     parentChoice?.targetSceneId,
-    parentChoiceNumber,
+    parentChoiceIndex,
     parentScene,
-    parentSceneId,
+    requestedChoiceId,
+    requestedParentSceneId,
     scenes,
     updateScene,
   ]);
@@ -322,50 +715,202 @@ export default function SceneEditorScreen() {
   const hasUnsavedChanges =
     sceneTitle !== (existingScene?.title || "") ||
     sceneText !== (existingScene?.text || "") ||
+    JSON.stringify(sceneTextFormatting) !==
+      JSON.stringify(existingScene?.textFormatting || []) ||
+    sceneType !== (existingScene?.sceneType || "story") ||
+    JSON.stringify(dialogueTurns) !== JSON.stringify(existingScene?.dialogueTurns || []) ||
     JSON.stringify(choices) !== JSON.stringify(existingScene?.choices || []) ||
     JSON.stringify(assets) !== JSON.stringify(existingScene?.assets || []) ||
-    newChoice.trim().length > 0;
+    JSON.stringify(scenePlaySettingsOverride) !==
+      JSON.stringify(existingScene?.playSettingsOverride);
 
-    useEffect(() => {
-  if (hasUnsavedChanges) {
-    setSaveStatus("idle");
-  }
-}, [hasUnsavedChanges]);
+  const sceneHasContent =
+    sceneTitle.trim().length > 0 ||
+    sceneText.trim().length > 0 ||
+    dialogueTurns.some((turn) => turn.speaker.trim().length > 0 || turn.text.trim().length > 0) ||
+    choices.length > 0 ||
+    assets.length > 0 ||
+    scenePlaySettingsOverride !== undefined;
 
-  const goBackSafely = () => {
-    if (!hasUnsavedChanges) {
-      router.replace("/story");
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+
+    if (!existingScene && !sceneHasContent) {
+      setSaveStatus("idle");
       return;
     }
 
-    Alert.alert(
-      "Leave without saving?",
-      "You have unsaved changes in this scene. If you go back now, they will be lost.",
-      [
-        {
-          text: "Stay here",
-          style: "cancel",
-        },
-        {
-          text: "Leave",
-          style: "destructive",
-          onPress: () => router.replace("/story"),
-        },
-      ],
-    );
+    if (autoSaveTimer.current) {
+      clearTimeout(autoSaveTimer.current);
+    }
+
+    const saveGeneration = ++autoSaveGeneration.current;
+
+    autoSaveTimer.current = setTimeout(() => {
+      if (saveGeneration !== autoSaveGeneration.current) return;
+
+      setSaveStatus("saving");
+      const saved = saveCurrentScene({ showAlerts: false });
+
+      if (!saved) {
+        setSaveStatus("error");
+        return;
+      }
+
+      requestAnimationFrame(() => {
+        if (saveGeneration === autoSaveGeneration.current) {
+          setSaveStatus("saved");
+        }
+      });
+
+      if (saved.wasNew) {
+        rememberScrollPosition(
+          `scene-editor:${saved.sceneId}`,
+          currentScrollY.current,
+        );
+        router.replace({
+          pathname: "/scene-editor",
+          params: {
+            sceneId: saved.sceneId,
+            returnSceneId:
+              typeof parentSceneId === "string" ? parentSceneId : undefined,
+            restoreScroll: "true",
+            createdFromChoice: createdFromChoiceLabel,
+            createdFromScene: createdFromSceneTitle,
+          },
+        });
+      }
+    }, 700);
+
+    return () => {
+      if (autoSaveTimer.current) {
+        clearTimeout(autoSaveTimer.current);
+      }
+    };
+  }, [
+    hasUnsavedChanges,
+    sceneHasContent,
+    sceneTitle,
+    sceneText,
+    sceneTextFormatting,
+    sceneType,
+    dialogueTurns,
+    choices,
+    assets,
+    scenePlaySettingsOverride,
+    createdFromChoiceLabel,
+    createdFromSceneTitle,
+  ]);
+
+  const sceneScrollKey = requestedSceneId
+    ? `scene-editor:${requestedSceneId}`
+    : undefined;
+
+  useEffect(() => {
+    if (!sceneScrollKey) return;
+
+    if (restoreScroll === "true") {
+      pendingRestoreY.current = getScrollPosition(sceneScrollKey);
+    } else {
+      clearScrollPosition(sceneScrollKey);
+      pendingRestoreY.current = 0;
+    }
+  }, [restoreScroll, sceneScrollKey]);
+
+  const restorePendingScroll = () => {
+    if (pendingRestoreY.current === null) return;
+    const y = pendingRestoreY.current;
+    pendingRestoreY.current = null;
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollTo({ y, animated: false });
+    });
   };
+
+  const flushSceneBeforeNavigation = () => {
+    autoSaveGeneration.current += 1;
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+
+    const saved = saveCurrentScene({ showAlerts: false });
+    if (saved) {
+      rememberScrollPosition(
+        `scene-editor:${saved.sceneId}`,
+        currentScrollY.current,
+      );
+    }
+    return saved;
+  };
+
+  const navigateFromSceneOnce = (
+    navigate: (savedSceneId: string) => void,
+  ) => {
+    if (navigationPending.current) return;
+    navigationPending.current = true;
+
+    const saved = flushSceneBeforeNavigation();
+    if (!saved) {
+      navigationPending.current = false;
+      return;
+    }
+
+    navigate(saved.sceneId);
+    setTimeout(() => {
+      navigationPending.current = false;
+    }, 500);
+  };
+
+  const previewCurrentScene = () => {
+    navigateFromSceneOnce((savedSceneId) => {
+      router.push({
+        pathname: "/play",
+        params: {
+          startSceneId: savedSceneId,
+          preview: "true",
+          returnSceneId: savedSceneId,
+        },
+      });
+    });
+  };
+
+  const openCurrentStoryTree = () => {
+    navigateFromSceneOnce((savedSceneId) => {
+      router.push({
+        pathname: "/story",
+        params: {
+          openTree: "true",
+          returnSceneId: savedSceneId,
+        },
+      });
+    });
+  };
+
+  const goBackSafely = () => {
+    autoSaveGeneration.current += 1;
+
+    if (autoSaveTimer.current) {
+      clearTimeout(autoSaveTimer.current);
+    }
+
+    if (hasUnsavedChanges && (existingScene || sceneHasContent)) {
+      const saved = saveCurrentScene({ showAlerts: false });
+      if (!saved) return;
+    }
+
+    router.dismissTo("/story");
+  };
+
+  safeBackNavigation.current = goBackSafely;
 
   useEffect(() => {
     const backHandler = BackHandler.addEventListener(
       "hardwareBackPress",
       () => {
-        goBackSafely();
+        safeBackNavigation.current();
         return true;
       },
     );
 
     return () => backHandler.remove();
-  }, [hasUnsavedChanges]);
+  }, []);
 
   return (
     <>
@@ -375,45 +920,106 @@ export default function SceneEditorScreen() {
             sceneId !== undefined && sceneId !== ""
               ? "Edit scene"
               : "New scene",
+          headerBackVisible: false,
+          gestureEnabled: false,
+          headerLeft: () => (
+            <Pressable
+              onPress={() => safeBackNavigation.current()}
+              accessibilityRole="button"
+              accessibilityLabel="Back to story and save changes"
+              hitSlop={12}
+              style={styles.headerBackButton}
+            >
+              <Text style={styles.headerBackButtonText}>{"\u2190"}</Text>
+            </Pressable>
+          ),
         }}
       />
 
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
         <ScrollView
           ref={scrollRef}
           style={{ flex: 1 }}
           contentContainerStyle={[styles.container, { paddingBottom: 200 }]}
           keyboardShouldPersistTaps="handled"
+          scrollEventThrottle={50}
+          onScroll={(event) => {
+            const y = event.nativeEvent.contentOffset.y;
+            currentScrollY.current = y;
+            if (sceneScrollKey) rememberScrollPosition(sceneScrollKey, y);
+          }}
+          onContentSizeChange={restorePendingScroll}
         >
           <Pressable style={styles.backButton} onPress={goBackSafely}>
             <Text style={styles.backButtonText}>← Back to story</Text>
           </Pressable>
 
+          <View style={styles.quickActionRow}>
+            <Pressable
+              style={styles.quickActionButton}
+              onPress={previewCurrentScene}
+              accessibilityRole="button"
+              accessibilityLabel="Preview from this scene"
+            >
+              <Text style={styles.quickActionText}>▶ Preview</Text>
+            </Pressable>
+            <Pressable
+              style={styles.quickActionButton}
+              onPress={openCurrentStoryTree}
+              accessibilityRole="button"
+              accessibilityLabel="Open full-screen Story Tree"
+            >
+              <Text style={styles.quickActionText}>Story Tree</Text>
+            </Pressable>
+          </View>
+
           {returnScene && (
             <Pressable
               style={styles.returnSceneButton}
               onPress={() => {
-                const saved = saveCurrentScene();
-                if (!saved) return;
-
-                router.replace({
-                  pathname: "/scene-editor",
-                  params: {
-                    sceneId: returnScene.id,
-                  },
+                navigateFromSceneOnce(() => {
+                  if (router.canGoBack()) {
+                    router.back();
+                  } else {
+                    router.replace({
+                      pathname: "/scene-editor",
+                      params: {
+                        sceneId: returnScene.id,
+                        restoreScroll: "true",
+                      },
+                    });
+                  }
                 });
               }}
             >
               <Text style={styles.returnSceneButtonText}>
-                ← Return to "{returnScene.title || "previous scene"}" Scene
+                ← Return to {returnScene.title || "previous scene"} scene
               </Text>
             </Pressable>
           )}
 
-          {!existingScene && parentScene && parentChoice && (
+          {createdFromChoiceLabel && (
+            <View style={styles.originChoiceCard}>
+              <Text style={styles.originChoiceLabel}>Created from choice:</Text>
+              <Text
+                style={styles.originChoiceText}
+                numberOfLines={2}
+                ellipsizeMode="tail"
+              >
+                {createdFromChoiceLabel}
+              </Text>
+              {createdFromSceneTitle && (
+                <Text style={styles.originChoiceSubtext} numberOfLines={1}>
+                  From scene: {createdFromSceneTitle}
+                </Text>
+              )}
+            </View>
+          )}
+
+          {!createdFromChoiceLabel && !existingScene && parentScene && parentChoice && (
             <View style={styles.originChoiceCard}>
               <Text style={styles.originChoiceLabel}>
                 Creating a new scene from
@@ -437,23 +1043,469 @@ export default function SceneEditorScreen() {
             <Text style={styles.label}>Scene title</Text>
             <TextInput
               style={styles.input}
-              placeholder="Arrival"
+              placeholder="Untitled Scene"
               placeholderTextColor="#8C806F"
               value={sceneTitle}
               onChangeText={setSceneTitle}
             />
 
-            <Text style={styles.label}>Scene text</Text>
+            {SHOW_WRITING_HINTS && editorHint && (
+              <View style={styles.templateHint}>
+                <Text style={styles.templateHintLabel}>Writing hint</Text>
+                <Text style={styles.templateHintText}>{editorHint}</Text>
+              </View>
+            )}
+
+            {showDialogueSceneOption && (
+              <>
+                <Text style={styles.label}>Scene format</Text>
+                <View style={styles.sceneTypeRow}>
+                  <Pressable
+                    style={[
+                      styles.sceneTypeButton,
+                      sceneType === "story" && styles.sceneTypeButtonSelected,
+                    ]}
+                    onPress={() => setSceneType("story")}
+                  >
+                    <Text
+                      style={[
+                        styles.sceneTypeButtonText,
+                        sceneType === "story" && styles.sceneTypeButtonTextSelected,
+                      ]}
+                    >
+                      Story
+                    </Text>
+                  </Pressable>
+
+                  <Pressable
+                    style={[
+                      styles.sceneTypeButton,
+                      sceneType === "dialogue" && styles.sceneTypeButtonSelected,
+                    ]}
+                    onPress={() => {
+                      setSceneType("dialogue");
+                      if (dialogueTurns.length === 0) {
+                        setDialogueTurns([
+                          { id: createDialogueTurnId(), speaker: "", text: "" },
+                        ]);
+                      }
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.sceneTypeButtonText,
+                        sceneType === "dialogue" && styles.sceneTypeButtonTextSelected,
+                      ]}
+                    >
+                      Dialogue
+                    </Text>
+                  </Pressable>
+                </View>
+              </>
+            )}
+
+            <Text style={styles.label}>
+              {sceneType === "dialogue" ? "Scene setup text" : "Scene text"}
+            </Text>
 
             <TextInput
+              ref={sceneTextInputRef}
               style={[styles.input, styles.textArea]}
-              placeholder="Write what happens..."
+              placeholder={
+                sceneType === "dialogue"
+                  ? "Set the place, mood, or action before the conversation..."
+                  : "Write what happens..."
+              }
               placeholderTextColor="#8C806F"
               value={sceneText}
-              onChangeText={setSceneText}
+              onChangeText={updateSceneText}
+              selection={sceneTextSelection}
+              onSelectionChange={(event) =>
+                setSceneTextSelection(event.nativeEvent.selection)
+              }
+              onFocus={() => {
+                setTimeout(() => {
+                  scrollRef.current?.scrollTo({
+                    y: currentScrollY.current + 100,
+                    animated: true,
+                  });
+                }, 250);
+              }}
               multiline
               textAlignVertical="top"
             />
+
+            <View style={styles.richTextToolbar}>
+              <Text style={styles.richTextToolbarLabel}>
+                Select text, then format
+              </Text>
+              <View style={styles.richTextToolbarButtons}>
+                {[
+                  {
+                    key: "bold" as const,
+                    label: "B",
+                    accessibilityLabel: "Make selected scene text bold",
+                    textStyle: { fontWeight: "900" as const },
+                  },
+                  {
+                    key: "italic" as const,
+                    label: "I",
+                    accessibilityLabel: "Make selected scene text italic",
+                    textStyle: { fontStyle: "italic" as const },
+                  },
+                  {
+                    key: "underline" as const,
+                    label: "U",
+                    accessibilityLabel: "Underline selected scene text",
+                    textStyle: {
+                      textDecorationLine: "underline" as const,
+                    },
+                  },
+                ].map((option) => {
+                  const disabled =
+                    sceneTextSelection.start === sceneTextSelection.end;
+                  return (
+                    <Pressable
+                      key={option.key}
+                      style={[
+                        styles.richTextButton,
+                        disabled && styles.richTextButtonDisabled,
+                      ]}
+                      disabled={disabled}
+                      onPress={() => formatSelectedSceneText(option.key)}
+                      accessibilityLabel={option.accessibilityLabel}
+                    >
+                      <Text
+                        style={[
+                          styles.richTextButtonText,
+                          option.textStyle,
+                        ]}
+                      >
+                        {option.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+
+            {sceneTextFormatting.length > 0 && sceneText.length > 0 && (
+              <View style={styles.richTextPreview}>
+                <Text style={styles.richTextPreviewLabel}>
+                  Formatting preview
+                </Text>
+                <Text style={styles.richTextPreviewText}>
+                  {parseRichText(sceneText, sceneTextFormatting).map(
+                    (span, index) => (
+                      <Text
+                        key={`${index}-${span.text.length}`}
+                        style={{
+                          fontWeight: span.bold ? "900" : undefined,
+                          fontStyle: span.italic ? "italic" : undefined,
+                          textDecorationLine: span.underline
+                            ? "underline"
+                            : undefined,
+                        }}
+                      >
+                        {span.text}
+                      </Text>
+                    ),
+                  )}
+                </Text>
+              </View>
+            )}
+
+            {sceneType === "dialogue" && (
+              <View style={styles.dialogueEditorBox}>
+                <Text style={styles.dialogueEditorTitle}>Dialogue lines</Text>
+                <Text style={styles.dialogueEditorHint}>
+                  Keep a conversation inside one scene, then add choices after it.
+                </Text>
+
+                {dialogueTurns.map((turn, index) => (
+                  <View key={turn.id || index} style={styles.dialogueTurnCard}>
+                    <View style={styles.dialogueTurnHeader}>
+                      <Text style={styles.dialogueTurnNumber}>Line {index + 1}</Text>
+                      <Pressable
+                        style={styles.dialogueRemoveButton}
+                        onPress={() => {
+                          setDialogueTurns((currentTurns) =>
+                            currentTurns.filter((_, turnIndex) => turnIndex !== index),
+                          );
+                        }}
+                      >
+                        <Text style={styles.dialogueRemoveButtonText}>Remove</Text>
+                      </Pressable>
+                    </View>
+
+                    <TextInput
+                      style={styles.dialogueSpeakerInput}
+                      placeholder="Speaker name"
+                      placeholderTextColor="#8C806F"
+                      value={turn.speaker}
+                      onChangeText={(text) => {
+                        setDialogueTurns((currentTurns) =>
+                          currentTurns.map((currentTurn, turnIndex) =>
+                            turnIndex === index
+                              ? { ...currentTurn, speaker: text }
+                              : currentTurn,
+                          ),
+                        );
+                      }}
+                    />
+
+                    <TextInput
+                      style={[styles.dialogueLineInput, styles.textArea]}
+                      placeholder="What do they say?"
+                      placeholderTextColor="#8C806F"
+                      value={turn.text}
+                      onChangeText={(text) => {
+                        setDialogueTurns((currentTurns) =>
+                          currentTurns.map((currentTurn, turnIndex) =>
+                            turnIndex === index
+                              ? { ...currentTurn, text }
+                              : currentTurn,
+                          ),
+                        );
+                      }}
+                      multiline
+                      textAlignVertical="top"
+                    />
+                  </View>
+                ))}
+
+                <Pressable
+                  style={styles.dialogueAddButton}
+                  onPress={() => {
+                    setDialogueTurns((currentTurns) => [
+                      ...currentTurns,
+                      { id: createDialogueTurnId(), speaker: "", text: "" },
+                    ]);
+                  }}
+                >
+                  <Text style={styles.dialogueAddButtonText}>Add dialogue line</Text>
+                </Pressable>
+              </View>
+            )}
+          </View>
+
+          <View style={styles.sectionCard}>
+            <Text style={styles.sectionTitle}>Scene Appearance</Text>
+            <Text style={styles.sceneAppearanceHelper}>
+              This scene uses Global Play Settings unless you turn on an
+              override.
+            </Text>
+
+            <Pressable
+              style={styles.sceneAppearanceToggle}
+              onPress={() => {
+                if (scenePlaySettingsOverride) {
+                  setScenePlaySettingsOverride(undefined);
+                } else {
+                  enableSceneAppearanceOverride();
+                }
+              }}
+              accessibilityRole="checkbox"
+              accessibilityState={{
+                checked: scenePlaySettingsOverride !== undefined,
+              }}
+            >
+              <Text style={styles.checkbox}>
+                {scenePlaySettingsOverride ? "\u2611" : "\u2610"}
+              </Text>
+              <View style={styles.checkboxTextArea}>
+                <Text style={styles.checkboxLabel}>
+                  Override global settings for this scene
+                </Text>
+                <Text style={styles.logicDescription}>
+                  Choose different music, font, text size, or colours here.
+                </Text>
+              </View>
+            </Pressable>
+
+            {scenePlaySettingsOverride && (
+              <View style={styles.sceneAppearanceOverrideBox}>
+                <Text style={styles.appearanceOptionLabel}>
+                  Background music
+                </Text>
+                <Text style={styles.sceneAppearanceStatus}>
+                  {sceneBackgroundMusicName}
+                </Text>
+
+                <View style={styles.appearanceOptionRow}>
+                  {SCENE_BACKGROUND_MUSIC.map((track) => {
+                    const selected =
+                      scenePlaySettingsOverride.backgroundMusic?.type ===
+                        "built-in" &&
+                      scenePlaySettingsOverride.backgroundMusic.builtInId ===
+                        track.id;
+                    return (
+                      <Pressable
+                        key={track.id}
+                        style={[
+                          styles.appearanceOptionButton,
+                          selected && styles.appearanceOptionButtonSelected,
+                        ]}
+                        onPress={() =>
+                          setSceneBackgroundMusic({
+                            type: "built-in",
+                            builtInId: track.id,
+                            name: track.title,
+                          })
+                        }
+                        accessibilityState={{ selected }}
+                      >
+                        <Text
+                          style={[
+                            styles.appearanceOptionText,
+                            selected && styles.appearanceOptionTextSelected,
+                          ]}
+                        >
+                          {track.title}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                <View style={styles.sceneAppearanceActionRow}>
+                  <Pressable
+                    style={styles.sceneAppearanceActionButton}
+                    onPress={uploadSceneBackgroundMusic}
+                  >
+                    <Text style={styles.sceneAppearanceActionText}>
+                      Upload music
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    style={styles.sceneAppearanceGhostButton}
+                    onPress={() => setSceneBackgroundMusic(null)}
+                  >
+                    <Text style={styles.sceneAppearanceGhostText}>
+                      No music
+                    </Text>
+                  </Pressable>
+                </View>
+
+                <Text style={styles.appearanceOptionLabel}>Play font</Text>
+                <View style={styles.appearanceOptionRow}>
+                  {PLAY_FONT_OPTIONS.map((option) => {
+                    const selected =
+                      scenePlaySettingsOverride.playAppearance.font ===
+                      option.id;
+                    return (
+                      <Pressable
+                        key={option.id}
+                        style={[
+                          styles.appearanceOptionButton,
+                          selected && styles.appearanceOptionButtonSelected,
+                        ]}
+                        onPress={() =>
+                          updateSceneAppearance({ font: option.id })
+                        }
+                        accessibilityState={{ selected }}
+                      >
+                        <Text
+                          style={[
+                            styles.appearanceOptionText,
+                            option.nativeFamily
+                              ? { fontFamily: option.nativeFamily }
+                              : undefined,
+                            selected && styles.appearanceOptionTextSelected,
+                          ]}
+                        >
+                          {option.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                <Text style={styles.appearanceOptionLabel}>Text size</Text>
+                <View style={styles.appearanceOptionRow}>
+                  {PLAY_TEXT_SIZE_OPTIONS.map((option) => {
+                    const selected =
+                      scenePlaySettingsOverride.playAppearance.textSize ===
+                      option.id;
+                    return (
+                      <Pressable
+                        key={option.id}
+                        style={[
+                          styles.appearanceOptionButton,
+                          selected && styles.appearanceOptionButtonSelected,
+                        ]}
+                        onPress={() =>
+                          updateSceneAppearance({ textSize: option.id })
+                        }
+                        accessibilityState={{ selected }}
+                      >
+                        <Text
+                          style={[
+                            styles.appearanceOptionText,
+                            selected && styles.appearanceOptionTextSelected,
+                          ]}
+                        >
+                          {option.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                <Text style={styles.appearanceOptionLabel}>Colour theme</Text>
+                <View style={styles.appearanceOptionRow}>
+                  {PLAY_THEMES.map((theme) => {
+                    const selected =
+                      scenePlaySettingsOverride.playAppearance.theme ===
+                      theme.id;
+                    return (
+                      <Pressable
+                        key={theme.id}
+                        style={[
+                          styles.sceneThemeButton,
+                          {
+                            backgroundColor: theme.sceneBackground,
+                            borderColor: selected
+                              ? theme.accent
+                              : theme.border,
+                          },
+                          selected && styles.sceneThemeButtonSelected,
+                        ]}
+                        onPress={() =>
+                          updateSceneAppearance({ theme: theme.id })
+                        }
+                        accessibilityLabel={`${theme.label} colour theme`}
+                        accessibilityState={{ selected }}
+                      >
+                        <View
+                          style={[
+                            styles.sceneThemeSwatch,
+                            { backgroundColor: theme.choiceBackground },
+                          ]}
+                        />
+                        <Text
+                          style={[
+                            styles.sceneThemeText,
+                            { color: theme.primaryText },
+                          ]}
+                        >
+                          {theme.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                <Pressable
+                  style={styles.resetSceneAppearanceButton}
+                  onPress={() => setScenePlaySettingsOverride(undefined)}
+                >
+                  <Text style={styles.resetSceneAppearanceText}>
+                    Reset to global settings
+                  </Text>
+                </Pressable>
+              </View>
+            )}
           </View>
 
           <Text style={styles.mainSectionHeading}>Choices</Text>
@@ -462,33 +1514,31 @@ export default function SceneEditorScreen() {
             const targetScene = scenes.find(
               (scene) => scene.id === choice.targetSceneId,
             );
+            const hasMissingTarget =
+              Boolean(choice.targetSceneId) && !targetScene;
+            const choiceConnectionKey = choice.id || String(index);
 
             const requiredRememberedChoice = availableRememberedChoices.find(
               (rememberedChoice) =>
                 rememberedChoice.id === choice.requiredChoiceId,
             );
 
-            const availableConditions = availableRememberedChoices.filter(
-              (rememberedChoice) => rememberedChoice.id !== choice.id,
-            );
 
-            const selectedChangeValue = findStoryValueDefinition(
-              choice.valueChange,
-            );
+            const valueChanges = getChoiceValueChanges(choice);
             const selectedRequiredValue = findStoryValueDefinition(
               choice.requiredValue,
             );
 
-            const valueChangeLabel =
-              choice.valueChange && selectedChangeValue
-                ? `${selectedChangeValue.name} ${formatSignedAmount(
-                    choice.valueChange.amount ?? selectedChangeValue.step,
-                  )}`
-                : choice.valueChange?.name?.trim()
-                  ? `${choice.valueChange.name.trim()} ${formatSignedAmount(
-                      choice.valueChange.amount ?? 0,
-                    )}`
-                  : undefined;
+            const requiredChoiceState = getRequiredChoiceState(choice);
+            const rememberedMemoryName = choice.rememberChoice
+              ? getChoiceMemoryName(choice)
+              : undefined;
+            const requiredMemoryName = requiredRememberedChoice?.choiceLabel;
+
+            const valueChangeLabels = valueChanges.map((change) => {
+              const definition = findStoryValueDefinition(change);
+              return `${definition?.name || "A story value"} ${formatSignedAmount(change.amount)}`;
+            });
 
             const requiredValueLabel =
               choice.requiredValue && selectedRequiredValue
@@ -509,7 +1559,7 @@ export default function SceneEditorScreen() {
                     value={choice.label}
                     placeholder="Choice text"
                     onChangeText={(text) => {
-                      setChoices((currentChoices) =>
+                      persistChoices((currentChoices) =>
                         currentChoices.map((currentChoice, choiceIndex) =>
                           choiceIndex === index
                             ? { ...currentChoice, label: text }
@@ -522,7 +1572,7 @@ export default function SceneEditorScreen() {
                   <Pressable
                     style={styles.deleteChoiceButton}
                     onPress={() => {
-                      setChoices((currentChoices) =>
+                      persistChoices((currentChoices) =>
                         currentChoices.filter(
                           (_, choiceIndex) => choiceIndex !== index,
                         ),
@@ -533,43 +1583,121 @@ export default function SceneEditorScreen() {
                   </Pressable>
                 </View>
 
-                <Text style={styles.choiceTargetText}>
-                  {choice.targetSceneId
-                    ? `Leads to: ${targetScene?.title || "Unknown scene"}`
-                    : "No target selected"}
-                </Text>
+                <View style={styles.choiceDestinationRow}>
+                  <Text
+                    style={[
+                      styles.choiceDestinationText,
+                      hasMissingTarget && styles.choiceDestinationMissingText,
+                    ]}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    <Text style={styles.choiceDestinationLabel}>Leads to: </Text>
+                    {targetScene
+                      ? getSceneDisplayName(targetScene)
+                      : hasMissingTarget
+                        ? "Missing scene — choose a new destination"
+                        : "Not selected"}
+                  </Text>
 
-                {(choice.rememberChoice ||
-                  requiredRememberedChoice ||
-                  valueChangeLabel ||
+                  {choice.targetSceneId && targetScene && (
+                    <Pressable
+                      style={styles.destinationJumpButton}
+                      onPress={() => {
+                        const saved = saveCurrentScene();
+                        if (!saved) return;
+
+                        router.replace({
+                          pathname: "/scene-editor",
+                          params: {
+                            sceneId: targetScene.id,
+                            returnSceneId: saved.sceneId,
+                          },
+                        });
+                      }}
+                    >
+                      <Text style={styles.destinationJumpButtonText}>Open {"\u2197"}</Text>
+                    </Pressable>
+                  )}
+                </View>
+
+                {connectionConfirmation?.choiceKey === choiceConnectionKey && (
+                  <Text
+                    style={styles.connectionConfirmationText}
+                    accessibilityRole="alert"
+                  >
+                    {"\u2713"} Connected to {connectionConfirmation.destination}
+                  </Text>
+                )}
+
+                {(rememberedMemoryName ||
+                  requiredMemoryName ||
+                  valueChangeLabels.length > 0 ||
                   requiredValueLabel) && (
-                  <View style={styles.logicSummaryBox}>
-                    {choice.rememberChoice && (
-                      <Text style={styles.logicSummaryText}>
-                        ✨Leaves a story trace
-                      </Text>
-                    )}
-
-                    {requiredRememberedChoice && (
-                      <Text style={styles.logicSummaryText}>
-                        🔒 Needs trace: {requiredRememberedChoice.sceneTitle} →{" "}
-                        {requiredRememberedChoice.choiceLabel}
-                      </Text>
-                    )}
-
-                    {valueChangeLabel && (
-                      <Text style={styles.logicSummaryText}>
-                        🔢 Changes: {valueChangeLabel}
-                      </Text>
-                    )}
-
+                  <View style={styles.logicChipRow}>
                     {requiredValueLabel && (
-                      <Text style={styles.logicSummaryText}>
-                        🔒 If value: {requiredValueLabel}
+                      <Text style={[styles.logicChip, styles.logicLockChip]}>
+                        🔒 {requiredValueLabel}
                       </Text>
                     )}
+
+                    {requiredMemoryName && (
+                      <Text style={[styles.logicChip, styles.logicMemoryChip]}>
+                        📌 {requiredChoiceState === "notRemembered" ? "without" : "needs"} {requiredMemoryName}
+                      </Text>
+                    )}
+
+                    {rememberedMemoryName && (
+                      <Text style={[styles.logicChip, styles.logicMemoryChip]}>
+                        📌 remembers {rememberedMemoryName}
+                      </Text>
+                    )}
+
+                    {valueChangeLabels.map((label, valueChangeIndex) => (
+                      <Text
+                        key={`value-change-${choice.id}-${valueChangeIndex}`}
+                        style={[styles.logicChip, styles.logicValueChip]}
+                      >
+                        {"\uD83E\uDED0"} {label}
+                      </Text>
+                    ))}
                   </View>
                 )}
+
+                <View style={styles.choiceOrderRow}>
+                  <Pressable
+                    style={[
+                      styles.choiceOrderButton,
+                      index === 0 && styles.choiceOrderButtonDisabled,
+                    ]}
+                    disabled={index === 0}
+                    onPress={() => moveChoice(index, -1)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Move ${choice.label || "choice"} up`}
+                    accessibilityState={{ disabled: index === 0 }}
+                  >
+                    <Text style={[
+                      styles.choiceOrderText,
+                      index === 0 && styles.choiceOrderTextDisabled,
+                    ]}>↑ Move Up</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[
+                      styles.choiceOrderButton,
+                      index === choices.length - 1 && styles.choiceOrderButtonDisabled,
+                    ]}
+                    disabled={index === choices.length - 1}
+                    onPress={() => moveChoice(index, 1)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Move ${choice.label || "choice"} down`}
+                    accessibilityState={{ disabled: index === choices.length - 1 }}
+                  >
+                    <Text style={[
+                      styles.choiceOrderText,
+                      index === choices.length - 1 && styles.choiceOrderTextDisabled,
+                    ]}>↓ Move Down</Text>
+                  </Pressable>
+                </View>
 
                 <View style={styles.choiceActionStack}>
                   <Pressable
@@ -583,23 +1711,15 @@ export default function SceneEditorScreen() {
                     <Text style={styles.choiceActionText}>
                       {expandedChoiceIndex === index
                         ? "Hide destination"
-                        : "Leads to..."}
+                        : "Change destination"}
                     </Text>
                   </Pressable>
 
                   <Pressable
                     style={styles.choiceActionButton}
-                    onPress={() => {
-                      setExpandedLogicChoiceIndex(
-                        expandedLogicChoiceIndex === index ? null : index,
-                      );
-                    }}
+                    onPress={() => setActiveChoiceLogicIndex(index)}
                   >
-                    <Text style={styles.choiceActionText}>
-                      {expandedLogicChoiceIndex === index
-                        ? "Hide story memory"
-                        : "Story memory"}
-                    </Text>
+                    <Text style={styles.choiceActionText}>Choice logic</Text>
                   </Pressable>
                 </View>
 
@@ -609,42 +1729,56 @@ export default function SceneEditorScreen() {
                       Where does this choice lead?
                     </Text>
 
-                    {scenes.map((targetScene, sceneIdx) => {
+                    {scenes.map((destinationScene) => {
                       const isSelected =
-                        choice.targetSceneId === targetScene.id;
+                        choice.targetSceneId === destinationScene.id;
 
                       return (
                         <View
-                          key={targetScene.id}
-                          style={styles.targetOptionRow}
+                          key={destinationScene.id}
+                          style={[
+                            styles.targetOptionRow,
+                            isSelected && styles.targetOptionRowSelected,
+                          ]}
                         >
                           <Pressable
                             onPress={() => {
-                              const updatedChoices = [...choices];
-                              updatedChoices[index] = {
-                                ...choice,
-                                targetSceneId: targetScene.id,
-                              };
-                              setChoices(updatedChoices);
-                              setExpandedChoiceIndex(null);
+                              connectChoiceToScene(
+                                choice,
+                                index,
+                                destinationScene,
+                              );
                             }}
-                            style={[
-                              styles.targetSelectButton,
-                              isSelected && styles.targetSelectButtonSelected,
-                            ]}
+                            style={styles.targetSelectButton}
                           >
+                            <Text
+                              style={[
+                                styles.targetCheckText,
+                                isSelected && styles.targetOptionTextSelected,
+                              ]}
+                            >
+                              {isSelected ? "\u2713" : " "}
+                            </Text>
                             <Text
                               style={[
                                 styles.targetOptionText,
                                 isSelected && styles.targetOptionTextSelected,
                               ]}
+                              numberOfLines={1}
+                              ellipsizeMode="tail"
                             >
-                              → {targetScene.title || `Scene ${sceneIdx + 1}`}
+                              {getSceneDisplayName(destinationScene)}
+                              {destinationScene.id === existingScene?.id
+                                ? " (this scene — loop)"
+                                : ""}
                             </Text>
                           </Pressable>
 
                           <Pressable
-                            style={styles.openTargetButton}
+                            style={[
+                              styles.openTargetButton,
+                              isSelected && styles.openTargetButtonSelected,
+                            ]}
                             onPress={() => {
                               const saved = saveCurrentScene();
                               if (!saved) return;
@@ -652,14 +1786,19 @@ export default function SceneEditorScreen() {
                               router.replace({
                                 pathname: "/scene-editor",
                                 params: {
-                                  sceneId: targetScene.id,
+                                  sceneId: destinationScene.id,
                                   returnSceneId: saved.sceneId,
                                 },
                               });
                             }}
                           >
-                            <Text style={styles.openTargetButtonText}>
-                              Open
+                            <Text
+                              style={[
+                                styles.openTargetButtonText,
+                                isSelected && styles.openTargetButtonTextSelected,
+                              ]}
+                            >
+                              {"\u2197"}
                             </Text>
                           </Pressable>
                         </View>
@@ -668,580 +1807,68 @@ export default function SceneEditorScreen() {
                   </View>
                 )}
 
-                {expandedLogicChoiceIndex === index && (
-                  <View style={styles.logicBox}>
-                    <View style={styles.titleWithInfo}>
-                      <Text style={styles.logicSectionTitle}>
-                        {" "}
-                        Story memory for this choice
-                      </Text>
-
-                      <Pressable
-                        style={styles.infoButton}
-                        onPress={showConditionalChoiceInfo}
-                      >
-                        <Text style={styles.infoButtonText}>ⓘ</Text>
-                      </Pressable>
-                    </View>
-
-                    <View style={styles.logicSubsection}>
-                      <Text style={styles.logicSubsectionTitle}>
-                        ✨ Story trace
-                      </Text>
-
-                      <Text style={styles.advancedSectionLabel}>
-                        Only show this choice if...
-                      </Text>
-
-                      <Text style={styles.choiceMetaLabel}>
-                        The player has a story trace:
-                      </Text>
-
-                      {availableConditions.length > 0 ? (
-                        <View style={styles.rememberedChoiceList}>
-                          {availableConditions.map((rememberedChoice) => {
-                            const isSelected =
-                              choice.requiredChoiceId === rememberedChoice.id;
-
-                            return (
-                              <Pressable
-                                key={rememberedChoice.id}
-                                style={[
-                                  styles.rememberedChoiceChip,
-                                  isSelected &&
-                                    styles.rememberedChoiceChipSelected,
-                                ]}
-                                onPress={() => {
-                                  setChoices((currentChoices) =>
-                                    currentChoices.map(
-                                      (currentChoice, choiceIndex) =>
-                                        choiceIndex === index
-                                          ? {
-                                              ...currentChoice,
-                                              requiredChoiceId: isSelected
-                                                ? undefined
-                                                : rememberedChoice.id,
-                                            }
-                                          : currentChoice,
-                                    ),
-                                  );
-                                }}
-                              >
-                                <Text
-                                  style={[
-                                    styles.rememberedChoiceChipText,
-                                    isSelected &&
-                                      styles.rememberedChoiceChipTextSelected,
-                                  ]}
-                                >
-                                  {rememberedChoice.sceneTitle} →{" "}
-                                  {rememberedChoice.choiceLabel}
-                                </Text>
-                              </Pressable>
-                            );
-                          })}
-                        </View>
-                      ) : (
-                        <Text style={styles.helperText}>
-                          No story traces yet. Turn on “Leave a story trace” for
-                          another choice first.
-                        </Text>
-                      )}
-
-                      <Text style={styles.advancedSectionLabel}>
-                        After the player chooses this...
-                      </Text>
-
-                      <Pressable
-                        style={styles.checkboxRow}
-                        onPress={() => {
-                          setChoices((currentChoices) =>
-                            currentChoices.map((currentChoice, choiceIndex) =>
-                              choiceIndex === index
-                                ? {
-                                    ...currentChoice,
-                                    id: currentChoice.id || createChoiceId(),
-                                    rememberChoice:
-                                      !currentChoice.rememberChoice,
-                                  }
-                                : currentChoice,
-                            ),
-                          );
-                        }}
-                      >
-                        <Text style={styles.checkbox}>
-                          {choice.rememberChoice ? "☑" : "☐"}
-                        </Text>
-                        <View style={styles.checkboxTextArea}>
-                          <View style={styles.inlineLabelWithInfo}>
-                            <Text style={styles.checkboxLabel}>
-                              Leave a story trace?
-                            </Text>
-
-                            <Pressable
-                              style={styles.smallInfoButton}
-                              onPress={showStoryTraceInfo}
-                            >
-                              <Text style={styles.smallInfoButtonText}>ⓘ</Text>
-                            </Pressable>
-                          </View>
-                        </View>
-                      </Pressable>
-                    </View>
-
-                    {hasStoryValues && (
-                      <View style={styles.logicSubsection}>
-                        <Text style={styles.logicSubsectionTitle}>
-                          🫐 Story values
-                        </Text>
-                        <Text style={styles.choiceMetaLabel}>
-                          This choice is visible only if this condition is
-                          true...
-                        </Text>
-
-                        {storyValueDefinitions.length > 0 ? (
-                          <>
-                            <View style={styles.valueChipRow}>
-                              {storyValueDefinitions.map((storyValue) => {
-                                const isSelected =
-                                  choice.requiredValue?.valueId ===
-                                    storyValue.id ||
-                                  choice.requiredValue?.name ===
-                                    storyValue.name;
-
-                                return (
-                                  <Pressable
-                                    key={storyValue.id}
-                                    style={[
-                                      styles.valueChip,
-                                      isSelected && styles.valueChipSelected,
-                                    ]}
-                                    onPress={() => {
-                                      setChoices((currentChoices) =>
-                                        currentChoices.map(
-                                          (currentChoice, choiceIndex) =>
-                                            choiceIndex === index
-                                              ? {
-                                                  ...currentChoice,
-                                                  requiredValue: isSelected
-                                                    ? undefined
-                                                    : {
-                                                        valueId: storyValue.id,
-                                                        name: storyValue.name,
-                                                        operator:
-                                                          currentChoice
-                                                            .requiredValue
-                                                            ?.operator ||
-                                                          "atLeast",
-                                                        amount:
-                                                          currentChoice
-                                                            .requiredValue
-                                                            ?.amount ??
-                                                          storyValue.initialValue,
-                                                      },
-                                                }
-                                              : currentChoice,
-                                        ),
-                                      );
-                                    }}
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.valueChipText,
-                                        isSelected &&
-                                          styles.valueChipTextSelected,
-                                      ]}
-                                    >
-                                      {storyValue.name}
-                                    </Text>
-                                  </Pressable>
-                                );
-                              })}
-                            </View>
-
-                            {selectedRequiredValue && choice.requiredValue && (
-                              <View style={styles.valueConditionBox}>
-                                <Pressable
-                                  style={styles.operatorPill}
-                                  onPress={() => {
-                                    setChoices((currentChoices) =>
-                                      currentChoices.map(
-                                        (currentChoice, choiceIndex) =>
-                                          choiceIndex === index
-                                            ? {
-                                                ...currentChoice,
-                                                requiredValue: {
-                                                  valueId:
-                                                    selectedRequiredValue.id,
-                                                  name: selectedRequiredValue.name,
-                                                  operator:
-                                                    getNextStoryValueOperator(
-                                                      currentChoice
-                                                        .requiredValue
-                                                        ?.operator,
-                                                    ),
-                                                  amount:
-                                                    currentChoice.requiredValue
-                                                      ?.amount ??
-                                                    selectedRequiredValue.initialValue,
-                                                },
-                                              }
-                                            : currentChoice,
-                                      ),
-                                    );
-                                  }}
-                                >
-                                  <Text style={styles.operatorPillText}>
-                                    {getStoryValueOperatorLabel(
-                                      choice.requiredValue.operator,
-                                    )}
-                                  </Text>
-                                </Pressable>
-
-                                <View style={styles.valueAmountControl}>
-                                  <Pressable
-                                    style={styles.valueAmountButton}
-                                    onPress={() => {
-                                      setChoices((currentChoices) =>
-                                        currentChoices.map(
-                                          (currentChoice, choiceIndex) => {
-                                            if (choiceIndex !== index)
-                                              return currentChoice;
-
-                                            const currentAmount =
-                                              currentChoice.requiredValue
-                                                ?.amount ??
-                                              selectedRequiredValue.initialValue;
-
-                                            return {
-                                              ...currentChoice,
-                                              requiredValue: {
-                                                valueId:
-                                                  selectedRequiredValue.id,
-                                                name: selectedRequiredValue.name,
-                                                operator:
-                                                  currentChoice.requiredValue
-                                                    ?.operator || "atLeast",
-                                                amount: clampNumber(
-                                                  currentAmount -
-                                                    selectedRequiredValue.step,
-                                                  selectedRequiredValue.minValue,
-                                                  selectedRequiredValue.maxValue,
-                                                ),
-                                              },
-                                            };
-                                          },
-                                        ),
-                                      );
-                                    }}
-                                  >
-                                    <Text style={styles.valueAmountButtonText}>
-                                      −
-                                    </Text>
-                                  </Pressable>
-
-                                  <Text style={styles.valueAmountText}>
-                                    {choice.requiredValue.amount ??
-                                      selectedRequiredValue.initialValue}
-                                  </Text>
-
-                                  <Pressable
-                                    style={styles.valueAmountButton}
-                                    onPress={() => {
-                                      setChoices((currentChoices) =>
-                                        currentChoices.map(
-                                          (currentChoice, choiceIndex) => {
-                                            if (choiceIndex !== index)
-                                              return currentChoice;
-
-                                            const currentAmount =
-                                              currentChoice.requiredValue
-                                                ?.amount ??
-                                              selectedRequiredValue.initialValue;
-
-                                            return {
-                                              ...currentChoice,
-                                              requiredValue: {
-                                                valueId:
-                                                  selectedRequiredValue.id,
-                                                name: selectedRequiredValue.name,
-                                                operator:
-                                                  currentChoice.requiredValue
-                                                    ?.operator || "atLeast",
-                                                amount: clampNumber(
-                                                  currentAmount +
-                                                    selectedRequiredValue.step,
-                                                  selectedRequiredValue.minValue,
-                                                  selectedRequiredValue.maxValue,
-                                                ),
-                                              },
-                                            };
-                                          },
-                                        ),
-                                      );
-                                    }}
-                                  >
-                                    <Text style={styles.valueAmountButtonText}>
-                                      +
-                                    </Text>
-                                  </Pressable>
-                                </View>
-                              </View>
-                            )}
-                          </>
-                        ) : (
-                          <Text style={styles.helperText}>
-                            Set up something that can increase or decrease on
-                            the Story screen first.
-                          </Text>
-                        )}
-
-                        <View style={styles.inlineLabelWithInfo}>
-                          <Text style={styles.logicHelperText}>
-                            Choose a story value, then decide whether this
-                            choice increases or decreases it.
-                          </Text>
-
-                          <Pressable
-                            style={styles.smallInfoButton}
-                            onPress={showStoryValueInfo}
-                          >
-                            <Text style={styles.smallInfoButtonText}>ⓘ</Text>
-                          </Pressable>
-                        </View>
-
-                        {storyValueDefinitions.length > 0 ? (
-                          <>
-                            <View style={styles.valueChipRow}>
-                              {storyValueDefinitions.map((storyValue) => {
-                                const isSelected =
-                                  choice.valueChange?.valueId ===
-                                    storyValue.id ||
-                                  choice.valueChange?.name === storyValue.name;
-
-                                return (
-                                  <Pressable
-                                    key={storyValue.id}
-                                    style={[
-                                      styles.valueChip,
-                                      isSelected && styles.valueChipSelected,
-                                    ]}
-                                    onPress={() => {
-                                      setChoices((currentChoices) =>
-                                        currentChoices.map(
-                                          (currentChoice, choiceIndex) =>
-                                            choiceIndex === index
-                                              ? {
-                                                  ...currentChoice,
-                                                  valueChange: isSelected
-                                                    ? undefined
-                                                    : {
-                                                        valueId: storyValue.id,
-                                                        name: storyValue.name,
-                                                        amount: storyValue.step,
-                                                      },
-                                                }
-                                              : currentChoice,
-                                        ),
-                                      );
-                                    }}
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.valueChipText,
-                                        isSelected &&
-                                          styles.valueChipTextSelected,
-                                      ]}
-                                    >
-                                      {storyValue.name}
-                                    </Text>
-                                  </Pressable>
-                                );
-                              })}
-                            </View>
-
-                            {selectedChangeValue && choice.valueChange && (
-                              <View style={styles.valueChangeDirectionRow}>
-                                <Pressable
-                                  style={[
-                                    styles.valueDirectionButton,
-                                    choice.valueChange.amount ===
-                                      -selectedChangeValue.step &&
-                                      styles.valueDirectionButtonSelected,
-                                  ]}
-                                  onPress={() => {
-                                    setChoices((currentChoices) =>
-                                      currentChoices.map(
-                                        (currentChoice, choiceIndex) =>
-                                          choiceIndex === index
-                                            ? {
-                                                ...currentChoice,
-                                                valueChange: {
-                                                  valueId:
-                                                    selectedChangeValue.id,
-                                                  name: selectedChangeValue.name,
-                                                  amount:
-                                                    -selectedChangeValue.step,
-                                                },
-                                              }
-                                            : currentChoice,
-                                      ),
-                                    );
-                                  }}
-                                >
-                                  <Text
-                                    style={[
-                                      styles.valueDirectionText,
-                                      choice.valueChange.amount ===
-                                        -selectedChangeValue.step &&
-                                        styles.valueDirectionTextSelected,
-                                    ]}
-                                  >
-                                    −{selectedChangeValue.step}
-                                  </Text>
-                                </Pressable>
-
-                                <Pressable
-                                  style={[
-                                    styles.valueDirectionButton,
-                                    choice.valueChange.amount ===
-                                      selectedChangeValue.step &&
-                                      styles.valueDirectionButtonSelected,
-                                  ]}
-                                  onPress={() => {
-                                    setChoices((currentChoices) =>
-                                      currentChoices.map(
-                                        (currentChoice, choiceIndex) =>
-                                          choiceIndex === index
-                                            ? {
-                                                ...currentChoice,
-                                                valueChange: {
-                                                  valueId:
-                                                    selectedChangeValue.id,
-                                                  name: selectedChangeValue.name,
-                                                  amount:
-                                                    selectedChangeValue.step,
-                                                },
-                                              }
-                                            : currentChoice,
-                                      ),
-                                    );
-                                  }}
-                                >
-                                  <Text
-                                    style={[
-                                      styles.valueDirectionText,
-                                      choice.valueChange.amount ===
-                                        selectedChangeValue.step &&
-                                        styles.valueDirectionTextSelected,
-                                    ]}
-                                  >
-                                    +{selectedChangeValue.step}
-                                  </Text>
-                                </Pressable>
-                              </View>
-                            )}
-                          </>
-                        ) : (
-                          <Text style={styles.helperText}>
-                            Set up something that can increase or decrease on
-                            the Story screen first.
-                          </Text>
-                        )}
-
-                        {choice.valueChange?.valueId ||
-                        choice.valueChange?.name?.trim() ? (
-                          <Pressable
-                            style={styles.clearLogicButton}
-                            onPress={() => {
-                              setChoices((currentChoices) =>
-                                currentChoices.map(
-                                  (currentChoice, choiceIndex) =>
-                                    choiceIndex === index
-                                      ? {
-                                          ...currentChoice,
-                                          valueChange: undefined,
-                                        }
-                                      : currentChoice,
-                                ),
-                              );
-                            }}
-                          >
-                            <Text style={styles.clearLogicText}>
-                              Clear value change
-                            </Text>
-                          </Pressable>
-                        ) : null}
-
-                        {choice.requiredValue?.valueId ||
-                        choice.requiredValue?.name?.trim() ? (
-                          <Pressable
-                            style={styles.clearLogicButton}
-                            onPress={() => {
-                              setChoices((currentChoices) =>
-                                currentChoices.map(
-                                  (currentChoice, choiceIndex) =>
-                                    choiceIndex === index
-                                      ? {
-                                          ...currentChoice,
-                                          requiredValue: undefined,
-                                        }
-                                      : currentChoice,
-                                ),
-                              );
-                            }}
-                          >
-                            <Text style={styles.clearLogicText}>
-                              Clear value condition
-                            </Text>
-                          </Pressable>
-                        ) : null}
-
-                        {choice.requiredChoiceId ? (
-                          <Pressable
-                            style={styles.clearLogicButton}
-                            onPress={() => {
-                              setChoices((currentChoices) =>
-                                currentChoices.map(
-                                  (currentChoice, choiceIndex) =>
-                                    choiceIndex === index
-                                      ? {
-                                          ...currentChoice,
-                                          requiredChoiceId: undefined,
-                                        }
-                                      : currentChoice,
-                                ),
-                              );
-                            }}
-                          >
-                            <Text style={styles.clearLogicText}>
-                              Clear condition
-                            </Text>
-                          </Pressable>
-                        ) : null}
-                      </View>
-                    )}
-                  </View>
-                )}
-
-                {choice.targetSceneId === undefined && existingScene && (
+                {existingScene && (
                   <Pressable
                     style={styles.createNextSceneButton}
                     onPress={() => {
-                      const saved = saveCurrentScene();
-                      if (!saved) return;
+                      Alert.alert(
+                        "Change destination?",
+                        "Create a new scene and change this choice\u2019s destination?",
+                        [
+                          { text: "Cancel", style: "cancel" },
+                          {
+                            text: "Create new scene",
+                            onPress: () => {
+                              const saved = flushSceneBeforeNavigation();
+                              if (!saved) return;
+                              const newSceneId = createSceneFromChoice(
+                                saved.sceneId,
+                                choice.id,
+                                index,
+                                true,
+                              );
 
-                      router.push({
-                        pathname: "/scene-editor",
-                        params: {
-                          parentSceneId: saved.sceneId,
-                          choiceIndex: index.toString(),
-                        },
-                      });
+                              if (!newSceneId) {
+                                Alert.alert(
+                                  "Could not create scene",
+                                  "The choice could not be linked. Please try again.",
+                                );
+                                return;
+                              }
+
+                              const linkedChoices = choicesRef.current.map(
+                                (currentChoice, choiceIndex) =>
+                                  (choice.id &&
+                                    currentChoice.id === choice.id) ||
+                                  (!choice.id && choiceIndex === index)
+                                    ? {
+                                        ...currentChoice,
+                                        targetSceneId: newSceneId,
+                                      }
+                                    : currentChoice,
+                              );
+                              choicesRef.current = linkedChoices;
+                              setChoices(linkedChoices);
+
+                              router.push({
+                                pathname: "/scene-editor",
+                                params: {
+                                  sceneId: newSceneId,
+                                  returnSceneId: saved.sceneId,
+                                  createdFromChoice:
+                                    choice.label || "(empty choice)",
+                                  createdFromScene:
+                                    existingScene.title || "Untitled scene",
+                                },
+                              });
+                            },
+                          },
+                        ],
+                      );
                     }}
                   >
                     <Text style={styles.choiceActionText}>
-                      + Create next scene 🌿
+                      + Create new scene 🌿
                     </Text>
                   </Pressable>
                 )}
@@ -1249,69 +1876,141 @@ export default function SceneEditorScreen() {
             );
           })}
 
-          <View style={styles.addChoiceCard}>
-            <View style={styles.titleWithInfo}>
-              <Text style={styles.addChoiceTitle}>Add a choice ➡️ </Text>
+          {isAddingChoice ? (
+            <View style={styles.addChoiceCard}>
+              <View style={styles.titleWithInfo}>
+                <Text style={styles.addChoiceTitle}>New choice</Text>
 
-              <Pressable style={styles.infoButton} onPress={showChoiceInfo}>
-                <Text style={styles.infoButtonText}>ⓘ</Text>
-              </Pressable>
+                <Pressable style={styles.infoButton} onPress={showChoiceInfo}>
+                  <Text style={styles.infoButtonText}>i</Text>
+                </Pressable>
+              </View>
+
+              <TextInput
+                style={styles.addChoiceInput}
+                placeholder="e.g. Follow the path"
+                value={newChoice}
+                onChangeText={setNewChoice}
+                autoFocus
+                onFocus={() => {
+                  setTimeout(() => {
+                    scrollRef.current?.scrollToEnd({ animated: true });
+                  }, 300);
+                }}
+              />
+
+              <View style={styles.addChoiceButtonRow}>
+                <Pressable
+                  style={styles.addChoiceCancelButton}
+                  onPress={() => {
+                    setNewChoice("");
+                    setIsAddingChoice(false);
+                  }}
+                >
+                  <Text style={styles.addChoiceCancelText}>Cancel</Text>
+                </Pressable>
+
+                <Pressable
+                  style={[
+                    styles.addChoiceButton,
+                    styles.addChoiceSubmitButton,
+                    !newChoice.trim() && styles.addChoiceButtonDisabled,
+                  ]}
+                  onPress={() => {
+                    if (!newChoice.trim()) return;
+
+                    persistChoices((currentChoices) => [
+                      ...currentChoices,
+                      {
+                        id: createChoiceId(),
+                        label: newChoice.trim(),
+                      },
+                    ]);
+
+                    setNewChoice("");
+                    setIsAddingChoice(false);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.addChoiceButtonText,
+                      styles.addChoiceSubmitButtonText,
+                      !newChoice.trim() && styles.addChoiceButtonTextDisabled,
+                    ]}
+                  >
+                    Add choice
+                  </Text>
+                </Pressable>
+              </View>
             </View>
+          ) : (
+            <View style={styles.addChoiceStatusRow}>
+              <Pressable
+                style={styles.addChoicePrimaryButton}
+                onPress={() => {
+                  setIsAddingChoice(true);
+                  setTimeout(() => {
+                    scrollRef.current?.scrollToEnd({ animated: true });
+                  }, 100);
+                }}
+              >
+                <Text style={styles.addChoicePrimaryText}>+ Add choice</Text>
+              </Pressable>
 
-            <TextInput
-              style={styles.addChoiceInput}
-              placeholder="e.g. Follow the path"
-              value={newChoice}
-              onChangeText={setNewChoice}
-              onFocus={() => {
-                setTimeout(() => {
-                  scrollRef.current?.scrollToEnd({ animated: true });
-                }, 300);
-              }}
-            />
+              {isOpeningScene && (
+                <View style={[styles.sceneStatusChip, styles.startStatusChip]}>
+                  <Text style={[styles.sceneStatusText, styles.startStatusText]}>
+                    Start
+                  </Text>
+                  <Pressable
+                    style={styles.statusInfoButton}
+                    onPress={showStartSceneInfo}
+                  >
+                    <Text style={styles.statusInfoButtonText}>i</Text>
+                  </Pressable>
+                </View>
+              )}
 
-            <Pressable
-              style={[
-                styles.addChoiceButton,
-                !newChoice.trim() && styles.addChoiceButtonDisabled,
-              ]}
-              onPress={() => {
-                if (!newChoice.trim()) return;
-
-                setChoices([
-                  ...choices,
-                  {
-                    id: createChoiceId(),
-                    label: newChoice.trim(),
-                  },
-                ]);
-
-                setNewChoice("");
-              }}
-            >
-              <Text
+              <View
                 style={[
-                  styles.addChoiceButtonText,
-                  !newChoice.trim() && styles.addChoiceButtonTextDisabled,
+                  styles.sceneStatusChip,
+                  styles.endingStatusChip,
+                  choices.length === 0 && styles.endingStatusChipActive,
                 ]}
               >
-                Add choice ➡️
-              </Text>
-            </Pressable>
-          </View>
-
+                <Text
+                  style={[
+                    styles.sceneStatusText,
+                    styles.endingStatusText,
+                    choices.length === 0 && styles.endingStatusTextActive,
+                  ]}
+                >
+                  {choices.length === 0 ? "Ending ✓" : "Ending"}
+                </Text>
+                <Pressable
+                  style={styles.statusInfoButton}
+                  onPress={showEndingSceneInfo}
+                >
+                  <Text style={styles.statusInfoButtonText}>i</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
           <View style={styles.sectionCard}>
-            <Text style={styles.sectionTitle}>Scene media 🎨</Text>
+            <View style={styles.sectionTitleRow}>
+              <Text style={styles.sectionTitle}>Scene media 🎨</Text>
+              <Pressable
+                style={styles.statusInfoButton}
+                onPress={showSceneMediaInfo}
+              >
+                <Text style={styles.statusInfoButtonText}>i</Text>
+              </Pressable>
+            </View>
 
             <Text style={styles.mediaStatus}>
               {assets.length > 0
                 ? `🎨 ${assets.length} media item${assets.length === 1 ? "" : "s"} added`
                 : "No media added yet"}
-            </Text>
-
-            <Text style={styles.helperText}>
-              Add images, drawings, audio, or voice notes. Your scene will be
-              saved first so the media has somewhere to live.
             </Text>
 
             <Pressable
@@ -1320,11 +2019,13 @@ export default function SceneEditorScreen() {
                 const saved = saveCurrentScene();
                 if (!saved) return;
 
+                rememberScrollPosition(
+                  `scene-editor:${saved.sceneId}`,
+                  currentScrollY.current,
+                );
                 router.push({
                   pathname: "/scene-media",
-                  params: {
-                    sceneId: saved.sceneId,
-                  },
+                  params: { sceneId: saved.sceneId },
                 });
               }}
             >
@@ -1332,38 +2033,620 @@ export default function SceneEditorScreen() {
             </Pressable>
           </View>
 
-          <Pressable
-  style={[styles.button, saveStatus === "saved" && styles.buttonSaved]}
-  onPress={() => {
-    const saved = saveCurrentScene();
-    if (!saved) return;
-
-    setSaveStatus("saved");
-
-    setTimeout(() => {
-      setSaveStatus("idle");
-    }, 1400);
-
-    if (saved.wasNew) {
-      router.replace({
-        pathname: "/scene-editor",
-        params: {
-          sceneId: saved.sceneId,
-          returnSceneId:
-            typeof parentSceneId === "string"
-              ? parentSceneId
-              : undefined,
-        },
-      });
-    }
-  }}
->
-  <Text style={styles.buttonText}>
-    {saveStatus === "saved" ? "Saved ✓" : "Save scene"}
-  </Text>
-</Pressable>
+          <View
+            style={[
+              styles.autoSaveStatusBox,
+              saveStatus === "error" && styles.autoSaveStatusErrorBox,
+            ]}
+            accessibilityRole={saveStatus === "error" ? "alert" : undefined}
+          >
+            <Text
+              style={[
+                styles.autoSaveStatusText,
+                saveStatus === "error" && styles.autoSaveStatusErrorText,
+              ]}
+            >
+              {saveStatus === "saving"
+                ? "Saving..."
+                : saveStatus === "saved"
+                  ? "Saved automatically"
+                  : saveStatus === "error"
+                    ? "Could not save changes."
+                    : "Changes save automatically"}
+            </Text>
+            {saveStatus === "error" && (
+              <Pressable
+                style={styles.autoSaveRetryButton}
+                onPress={() => {
+                  setSaveStatus("saving");
+                  const saved = saveCurrentScene({ showAlerts: false });
+                  setSaveStatus(saved ? "saved" : "error");
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Retry saving scene"
+              >
+                <Text style={styles.autoSaveRetryText}>Try again</Text>
+              </Pressable>
+            )}
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={activeChoiceLogicIndex !== null}
+        animationType="slide"
+        onRequestClose={() => setActiveChoiceLogicIndex(null)}
+      >
+        <KeyboardAvoidingView
+          style={styles.logicModalScreen}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
+          {activeChoiceLogicIndex !== null && choices[activeChoiceLogicIndex] ? (() => {
+            const choice = choices[activeChoiceLogicIndex];
+            const modalAvailableConditions = availableRememberedChoices.filter(
+              (rememberedChoice) => rememberedChoice.id !== choice.id,
+            );
+            const selectedRequiredValue = findStoryValueDefinition(choice.requiredValue);
+            const valueChanges = getChoiceValueChanges(choice);
+            const visibilityMode = choice.requiredValue
+              ? "value"
+              : choice.requiredChoiceId || choice.requiredTraceLabel?.trim()
+                ? "remembered"
+                : "always";
+
+            return (
+              <ScrollView
+                contentContainerStyle={styles.logicModalContent}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode="on-drag"
+              >
+                <View style={styles.logicModalHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.logicModalTitle}>Choice logic</Text>
+                    <Text style={styles.logicModalSubtitle} numberOfLines={2}>
+                      {choice.label || "Untitled choice"}
+                    </Text>
+                  </View>
+                  <Pressable
+                    style={styles.logicModalCloseButton}
+                    onPress={() => setActiveChoiceLogicIndex(null)}
+                  >
+                    <Text style={styles.logicModalCloseText}>Done</Text>
+                  </Pressable>
+                </View>
+
+                <View style={styles.logicModalSection}>
+                  <View style={styles.logicModalSectionHeader}>
+                    <Text style={styles.logicModalSectionTitle}>When the player chooses this</Text>
+                    <Pressable style={styles.logicInfoButton} onPress={showChoiceConsequenceInfo}>
+                      <Text style={styles.logicInfoButtonText}>i</Text>
+                    </Pressable>
+                  </View>
+                  <Text style={styles.logicModalHelper}>
+                    Choose what the story should remember or change.
+                  </Text>
+
+                  <View style={styles.logicCompactGroup}>
+                    <Pressable
+                      style={styles.checkboxRow}
+                      onPress={() => {
+                        updateChoiceAt(activeChoiceLogicIndex, (currentChoice) => {
+                          const shouldRemember = !currentChoice.rememberChoice;
+                          return {
+                            ...currentChoice,
+                            id: currentChoice.id || createChoiceId(),
+                            rememberChoice: shouldRemember,
+                            rememberFeedbackEnabled: shouldRemember
+                              ? currentChoice.rememberFeedbackEnabled
+                              : false,
+                            memoryName: shouldRemember
+                              ? currentChoice.memoryName || createMemoryName(currentChoice.label)
+                              : currentChoice.memoryName,
+                          };
+                        });
+                      }}
+                    >
+                      <Text style={styles.checkbox}>{choice.rememberChoice ? "\u2611" : "\u2610"}</Text>
+                      <View style={styles.checkboxTextArea}>
+                        <Text style={styles.checkboxLabel}>📌 Remember this choice</Text>
+                        <Text style={styles.logicDescription}>
+                          The story can use this later to unlock another path.
+                        </Text>
+                      </View>
+                    </Pressable>
+
+                    {choice.rememberChoice && (
+                      <View style={styles.memoryNameBox}>
+                        <Text style={styles.choiceMetaLabel}>The story will remember</Text>
+                        <TextInput
+                          style={styles.memoryNameInput}
+                          value={getChoiceMemoryName(choice)}
+                          onChangeText={(text) => {
+                            updateChoiceAt(activeChoiceLogicIndex, (currentChoice) => ({
+                              ...currentChoice,
+                              id: currentChoice.id || createChoiceId(),
+                              memoryName: text,
+                            }));
+                          }}
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          placeholder="helped_bird"
+                        />
+
+                        <View style={styles.feedbackBox}>
+                          <Pressable
+                            style={styles.checkboxRow}
+                            onPress={() => {
+                              updateChoiceAt(activeChoiceLogicIndex, (currentChoice) => ({
+                                ...currentChoice,
+                                rememberFeedbackEnabled: !currentChoice.rememberFeedbackEnabled,
+                              }));
+                            }}
+                          >
+                            <Text style={styles.checkbox}>
+                              {choice.rememberFeedbackEnabled ? "\u2611" : "\u2610"}
+                            </Text>
+                            <View style={styles.checkboxTextArea}>
+                              <Text style={styles.checkboxLabel}>Show feedback in Play mode</Text>
+                              <Text style={styles.logicDescription}>
+                                Briefly tells the player that the choice was remembered.
+                              </Text>
+                            </View>
+                          </Pressable>
+                          {choice.rememberFeedbackEnabled && (
+                            <TextInput
+                              style={styles.feedbackInput}
+                              value={choice.rememberFeedbackMessage || ""}
+                              onChangeText={(text) => {
+                                updateChoiceAt(activeChoiceLogicIndex, (currentChoice) => ({
+                                  ...currentChoice,
+                                  rememberFeedbackMessage: text,
+                                }));
+                              }}
+                              placeholder="This choice will be remembered."
+                              multiline
+                            />
+                          )}
+                        </View>
+                      </View>
+                    )}
+                  </View>
+
+                  <View style={styles.logicCompactGroupLast}>
+                    <Text style={styles.logicGroupTitle}>{"\uD83E\uDED0"} Change a story value</Text>
+                    <Text style={styles.logicDescription}>
+                      Pick a value and enter how much it should increase or decrease.
+                    </Text>
+
+                    {storyValueDefinitions.length > 0 ? (
+                      <View>
+                        {valueChanges.length === 0 && (
+                          <View style={styles.valueChipRow}>
+                            {storyValueDefinitions.map((storyValue) => (
+                              <Pressable
+                                key={`change-first-${storyValue.id}`}
+                                style={styles.valueChip}
+                                onPress={() => updateChoiceAt(
+                                  activeChoiceLogicIndex,
+                                  (currentChoice) => ({
+                                    ...currentChoice,
+                                    valueChanges: [
+                                      ...getChoiceValueChanges(currentChoice),
+                                      { valueId: storyValue.id, amount: 1 },
+                                    ],
+                                    valueChange: undefined,
+                                  }),
+                                )}
+                              >
+                                <Text style={styles.valueChipText}>{storyValue.name}</Text>
+                              </Pressable>
+                            ))}
+                          </View>
+                        )}
+
+                        {valueChanges.map((change, changeIndex) => {
+                          const selectedValue = findStoryValueDefinition(change);
+                          const selectedElsewhere = new Set(
+                            valueChanges
+                              .filter((_, index) => index !== changeIndex)
+                              .map((otherChange) => otherChange.valueId),
+                          );
+
+                          return (
+                            <View
+                              key={`value-change-editor-${changeIndex}-${change.valueId}`}
+                              style={styles.valueChangeEditor}
+                            >
+                              <View style={styles.valueChangeEditorHeader}>
+                                <Text style={styles.choiceMetaLabel}>
+                                  {valueChanges.length > 1
+                                    ? `Value change ${changeIndex + 1}`
+                                    : "Story value"}
+                                </Text>
+                                <Pressable
+                                  style={styles.removeValueChangeButton}
+                                  onPress={() => updateChoiceAt(
+                                    activeChoiceLogicIndex,
+                                    (currentChoice) => {
+                                      const nextChanges = getChoiceValueChanges(currentChoice)
+                                        .filter((_, index) => index !== changeIndex);
+                                      return {
+                                        ...currentChoice,
+                                        valueChanges: nextChanges,
+                                        valueChange: undefined,
+                                        valueFeedbackEnabled:
+                                          nextChanges.length > 0
+                                            ? currentChoice.valueFeedbackEnabled
+                                            : false,
+                                      };
+                                    },
+                                  )}
+                                  accessibilityRole="button"
+                                  accessibilityLabel={`Remove ${selectedValue?.name || "story value"} change`}
+                                >
+                                  <Text style={styles.removeValueChangeText}>Remove</Text>
+                                </Pressable>
+                              </View>
+
+                              <View style={styles.valueChipRow}>
+                                {storyValueDefinitions.map((storyValue) => {
+                                  const isSelected = change.valueId === storyValue.id;
+                                  const isUnavailable = selectedElsewhere.has(storyValue.id);
+
+                                  return (
+                                    <Pressable
+                                      key={`change-${changeIndex}-${storyValue.id}`}
+                                      style={[
+                                        styles.valueChip,
+                                        isSelected && styles.valueChipSelected,
+                                        isUnavailable && styles.valueChipDisabled,
+                                      ]}
+                                      disabled={isUnavailable}
+                                      onPress={() => updateChoiceAt(
+                                        activeChoiceLogicIndex,
+                                        (currentChoice) => ({
+                                          ...currentChoice,
+                                          valueChanges: getChoiceValueChanges(currentChoice).map(
+                                            (currentChange, index) =>
+                                              index === changeIndex
+                                                ? { ...currentChange, valueId: storyValue.id }
+                                                : currentChange,
+                                          ),
+                                          valueChange: undefined,
+                                        }),
+                                      )}
+                                      accessibilityState={{
+                                        selected: isSelected,
+                                        disabled: isUnavailable,
+                                      }}
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.valueChipText,
+                                          isSelected && styles.valueChipTextSelected,
+                                          isUnavailable && styles.valueChipTextDisabled,
+                                        ]}
+                                      >
+                                        {storyValue.name}
+                                      </Text>
+                                    </Pressable>
+                                  );
+                                })}
+                              </View>
+
+                              <View style={styles.valueChangeAmountRow}>
+                                <Text style={styles.choiceMetaLabel}>Change by</Text>
+                                <View style={styles.valueAmountControl}>
+                                  <Pressable
+                                    style={styles.valueAmountButton}
+                                    onPress={() => updateChoiceAt(
+                                      activeChoiceLogicIndex,
+                                      (currentChoice) => ({
+                                        ...currentChoice,
+                                        valueChanges: getChoiceValueChanges(currentChoice).map(
+                                          (currentChange, index) =>
+                                            index === changeIndex
+                                              ? { ...currentChange, amount: currentChange.amount - 1 }
+                                              : currentChange,
+                                        ),
+                                        valueChange: undefined,
+                                      }),
+                                    )}
+                                    accessibilityLabel={`Decrease ${selectedValue?.name || "story value"} change`}
+                                  >
+                                    <Text style={styles.valueAmountButtonText}>-</Text>
+                                  </Pressable>
+                                  <SignedAmountInput
+                                    value={change.amount}
+                                    onChange={(amount) => updateChoiceAt(
+                                      activeChoiceLogicIndex,
+                                      (currentChoice) => ({
+                                        ...currentChoice,
+                                        valueChanges: getChoiceValueChanges(currentChoice).map(
+                                          (currentChange, index) =>
+                                            index === changeIndex
+                                              ? { ...currentChange, amount }
+                                              : currentChange,
+                                        ),
+                                        valueChange: undefined,
+                                      }),
+                                    )}
+                                  />
+                                  <Pressable
+                                    style={styles.valueAmountButton}
+                                    onPress={() => updateChoiceAt(
+                                      activeChoiceLogicIndex,
+                                      (currentChoice) => ({
+                                        ...currentChoice,
+                                        valueChanges: getChoiceValueChanges(currentChoice).map(
+                                          (currentChange, index) =>
+                                            index === changeIndex
+                                              ? { ...currentChange, amount: currentChange.amount + 1 }
+                                              : currentChange,
+                                        ),
+                                        valueChange: undefined,
+                                      }),
+                                    )}
+                                    accessibilityLabel={`Increase ${selectedValue?.name || "story value"} change`}
+                                  >
+                                    <Text style={styles.valueAmountButtonText}>+</Text>
+                                  </Pressable>
+                                </View>
+                              </View>
+                            </View>
+                          );
+                        })}
+
+                        {valueChanges.length > 0 &&
+                          valueChanges.length < storyValueDefinitions.length && (
+                            <Pressable
+                              style={styles.addValueChangeButton}
+                              onPress={() => updateChoiceAt(
+                                activeChoiceLogicIndex,
+                                (currentChoice) => {
+                                  const currentChanges = getChoiceValueChanges(currentChoice);
+                                  const usedValueIds = new Set(
+                                    currentChanges.map((change) => change.valueId),
+                                  );
+                                  const nextValue = storyValueDefinitions.find(
+                                    (storyValue) => !usedValueIds.has(storyValue.id),
+                                  );
+                                  if (!nextValue) return currentChoice;
+
+                                  return {
+                                    ...currentChoice,
+                                    valueChanges: [
+                                      ...currentChanges,
+                                      { valueId: nextValue.id, amount: 1 },
+                                    ],
+                                    valueChange: undefined,
+                                  };
+                                },
+                              )}
+                            >
+                              <Text style={styles.addValueChangeButtonText}>
+                                + Change another value
+                              </Text>
+                            </Pressable>
+                          )}
+
+                        {valueChanges.length > 0 && (
+                          <View style={styles.feedbackBox}>
+                            <Pressable
+                              style={styles.checkboxRow}
+                              onPress={() => updateChoiceAt(
+                                activeChoiceLogicIndex,
+                                (currentChoice) => ({
+                                  ...currentChoice,
+                                  valueFeedbackEnabled: !currentChoice.valueFeedbackEnabled,
+                                }),
+                              )}
+                            >
+                              <Text style={styles.checkbox}>
+                                {choice.valueFeedbackEnabled ? "\u2611" : "\u2610"}
+                              </Text>
+                              <View style={styles.checkboxTextArea}>
+                                <Text style={styles.checkboxLabel}>Show feedback in Play mode</Text>
+                                <Text style={styles.logicDescription}>
+                                  Briefly summarizes all value changes together.
+                                </Text>
+                              </View>
+                            </Pressable>
+                            {choice.valueFeedbackEnabled && (
+                              <TextInput
+                                style={styles.feedbackInput}
+                                value={choice.valueFeedbackMessage || ""}
+                                onChangeText={(text) => updateChoiceAt(
+                                  activeChoiceLogicIndex,
+                                  (currentChoice) => ({
+                                    ...currentChoice,
+                                    valueFeedbackMessage: text,
+                                  }),
+                                )}
+                                placeholder="Confidence +1 \u00B7 Energy \u22122"
+                                multiline
+                              />
+                            )}
+                          </View>
+                        )}
+                      </View>
+                    ) : (
+                      <Text style={styles.logicEmptyText}>No story values yet</Text>
+                    )}
+                  </View>
+                </View>
+
+                <View style={styles.logicModalSection}>
+                  <View style={styles.logicModalSectionHeader}>
+                    <Text style={styles.logicModalSectionTitle}>When this choice appears</Text>
+                    <Pressable style={styles.logicInfoButton} onPress={showChoiceVisibilityInfo}>
+                      <Text style={styles.logicInfoButtonText}>i</Text>
+                    </Pressable>
+                  </View>
+                  <Text style={styles.logicModalHelper}>
+                    Choose one rule for when the player can see this choice.
+                  </Text>
+
+                  <Pressable
+                    style={[styles.logicRowButton, visibilityMode === "always" && styles.logicRowButtonSelected]}
+                    onPress={() => updateChoiceAt(activeChoiceLogicIndex, (currentChoice) => ({
+                      ...currentChoice,
+                      requiredChoiceId: undefined,
+                      requiredChoiceState: undefined,
+                      requiredTraceLabel: undefined,
+                      requiredValue: undefined,
+                    }))}
+                  >
+                    <Text style={[styles.logicRowButtonText, visibilityMode === "always" && styles.logicRowButtonTextSelected]}>
+                      Always
+                    </Text>
+                  </Pressable>
+
+                  <View style={styles.logicCompactGroup}>
+                    <Text style={styles.logicGroupTitle}>📌 Only when a remembered choice condition is met</Text>
+                    <Text style={styles.logicDescription}>
+                      Show this choice after another choice was remembered, or while it is not remembered.
+                    </Text>
+                    {modalAvailableConditions.length > 0 ? (
+                      <>
+                        <View style={styles.rememberedChoiceList}>
+                          {modalAvailableConditions.map((rememberedChoice) => {
+                            const isSelected = choice.requiredChoiceId === rememberedChoice.id;
+                            return (
+                              <Pressable
+                                key={`condition-${rememberedChoice.id}`}
+                                style={[styles.rememberedChoiceChip, isSelected && styles.rememberedChoiceChipSelected]}
+                                onPress={() => updateChoiceAt(activeChoiceLogicIndex, (currentChoice) => ({
+                                  ...currentChoice,
+                                  requiredChoiceId: rememberedChoice.id,
+                                  requiredChoiceState: isSelected
+                                    ? currentChoice.requiredChoiceState || "remembered"
+                                    : "remembered",
+                                  requiredTraceLabel: undefined,
+                                  requiredValue: undefined,
+                                }))}
+                              >
+                                <Text style={[styles.rememberedChoiceChipText, isSelected && styles.rememberedChoiceChipTextSelected]}>
+                                  {rememberedChoice.choiceLabel}
+                                </Text>
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+                        {choice.requiredChoiceId && (
+                          <View style={styles.conditionStateRow}>
+                            {(["remembered", "notRemembered"] as const).map((state) => (
+                              <Pressable
+                                key={state}
+                                style={[styles.logicOptionButton, getRequiredChoiceState(choice) === state && styles.logicOptionButtonSelected]}
+                                onPress={() => updateChoiceAt(activeChoiceLogicIndex, (currentChoice) => ({
+                                  ...currentChoice,
+                                  requiredChoiceState: state,
+                                }))}
+                              >
+                                <Text style={[styles.logicOptionText, getRequiredChoiceState(choice) === state && styles.logicOptionTextSelected]}>
+                                  {state === "remembered" ? "Is remembered" : "Is not remembered"}
+                                </Text>
+                              </Pressable>
+                            ))}
+                          </View>
+                        )}
+                      </>
+                    ) : (
+                      <Text style={styles.logicEmptyText}>No other remembered choices yet</Text>
+                    )}
+                  </View>
+
+                  <View style={styles.logicCompactGroupLast}>
+                    <Text style={styles.logicGroupTitle}>🫐 Only when a story-value condition is met</Text>
+                    <Text style={styles.logicDescription}>
+                      Compare one value with a number before showing this choice.
+                    </Text>
+                    {storyValueDefinitions.length > 0 ? (
+                      <View>
+                        <View style={styles.valueChipRow}>
+                          {storyValueDefinitions.map((storyValue) => {
+                            const isSelected =
+                              choice.requiredValue?.valueId === storyValue.id ||
+                              choice.requiredValue?.name === storyValue.name;
+                            return (
+                              <Pressable
+                                key={`required-${storyValue.id}`}
+                                style={[styles.valueChip, isSelected && styles.valueChipSelected]}
+                                onPress={() => updateChoiceAt(activeChoiceLogicIndex, (currentChoice) => ({
+                                  ...currentChoice,
+                                  requiredChoiceId: undefined,
+                                  requiredChoiceState: undefined,
+                                  requiredTraceLabel: undefined,
+                                  requiredValue: {
+                                    valueId: storyValue.id,
+                                    name: storyValue.name,
+                                    operator: isSelected
+                                      ? currentChoice.requiredValue?.operator || "atLeast"
+                                      : "atLeast",
+                                    amount: isSelected
+                                      ? currentChoice.requiredValue?.amount ?? storyValue.initialValue
+                                      : storyValue.initialValue,
+                                  },
+                                }))}
+                              >
+                                <Text style={[styles.valueChipText, isSelected && styles.valueChipTextSelected]}>
+                                  {storyValue.name}
+                                </Text>
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+
+                        {selectedRequiredValue && choice.requiredValue && (
+                          <View style={styles.logicInlineControls}>
+                            <Pressable
+                              style={styles.operatorPill}
+                              onPress={() => updateChoiceAt(activeChoiceLogicIndex, (currentChoice) => ({
+                                ...currentChoice,
+                                requiredValue: {
+                                  ...currentChoice.requiredValue!,
+                                  valueId: selectedRequiredValue.id,
+                                  name: selectedRequiredValue.name,
+                                  operator: getNextStoryValueOperator(currentChoice.requiredValue?.operator),
+                                },
+                              }))}
+                            >
+                              <Text style={styles.operatorPillText}>
+                                {getStoryValueOperatorLabel(choice.requiredValue.operator)}
+                              </Text>
+                            </Pressable>
+                            <View style={styles.valueAmountControl}>
+                              {[-1, 1].map((amountDelta) => (
+                                <Pressable
+                                  key={amountDelta}
+                                  style={styles.valueAmountButton}
+                                  onPress={() => updateChoiceAt(activeChoiceLogicIndex, (currentChoice) => ({
+                                    ...currentChoice,
+                                    requiredValue: {
+                                      ...currentChoice.requiredValue!,
+                                      amount: (currentChoice.requiredValue?.amount ?? selectedRequiredValue.initialValue) + amountDelta,
+                                    },
+                                  }))}
+                                >
+                                  <Text style={styles.valueAmountButtonText}>{amountDelta < 0 ? "-" : "+"}</Text>
+                                </Pressable>
+                              ))}
+                              <Text style={styles.valueAmountText}>{choice.requiredValue.amount}</Text>
+                            </View>
+                          </View>
+                        )}
+                      </View>
+                    ) : (
+                      <Text style={styles.logicEmptyText}>No story values yet</Text>
+                    )}
+                  </View>
+                </View>
+              </ScrollView>
+            );
+          })() : null}
+        </KeyboardAvoidingView>
+      </Modal>
     </>
   );
 }
@@ -1377,8 +2660,50 @@ const styles = StyleSheet.create({
   },
 
   buttonSaved: {
-  backgroundColor: "#4F6F52",
-},
+    backgroundColor: "#4F6F52",
+  },
+
+  autoSaveStatusBox: {
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 18,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+    backgroundColor: "#E9F2DD",
+  },
+
+  autoSaveStatusErrorBox: {
+    backgroundColor: "#FFF1EC",
+    borderColor: "#C86B55",
+  },
+
+  autoSaveStatusText: {
+    color: "#4F6F52",
+    fontWeight: "900",
+  },
+
+  autoSaveStatusErrorText: {
+    color: "#8A382B",
+  },
+
+  autoSaveRetryButton: {
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 16,
+    marginTop: 8,
+    borderRadius: 12,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#C86B55",
+  },
+
+  autoSaveRetryText: {
+    color: "#8A382B",
+    fontSize: 14,
+    fontWeight: "800",
+  },
 
   returnSceneButton: {
     backgroundColor: "#FFFCF2",
@@ -1481,41 +2806,127 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
 
+  choiceDestinationRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 4,
+    marginBottom: 6,
+    alignSelf: "flex-start",
+    maxWidth: "100%",
+  },
+
+  choiceDestinationText: {
+    flexShrink: 1,
+    maxWidth: 250,
+    color: "#3D3528",
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: "800",
+  },
+  choiceDestinationMissingText: {
+    color: "#A33F32",
+  },
+
+  connectionConfirmationText: {
+    alignSelf: "flex-start",
+    color: "#247322",
+    backgroundColor: "#E9F2DD",
+    borderWidth: 1,
+    borderColor: "#BFD5A9",
+    borderRadius: 12,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+    marginBottom: 8,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "900",
+  },
+
+  choiceDestinationLabel: {
+    color: "#665D4E",
+    fontWeight: "700",
+  },
+
+  destinationJumpButton: {
+    minWidth: 72,
+    height: 34,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFFDF7",
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+  },
+
+  destinationJumpButtonText: {
+    color: "#247322",
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: "900",
+  },
+
   targetOptionRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     marginBottom: 8,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+    backgroundColor: "#FFFDF7",
+  },
+
+  targetOptionRowSelected: {
+    borderColor: "#247322",
+    backgroundColor: "#247322",
   },
 
   targetSelectButton: {
     flex: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 18,
-    backgroundColor: "#247322",
-    borderWidth: 1,
-    borderColor: "#247322",
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 10,
+    paddingLeft: 12,
+    paddingRight: 6,
   },
 
-  targetSelectButtonSelected: {
-    borderColor: "#34C759",
-    backgroundColor: "#247322",
+  targetCheckText: {
+    width: 18,
+    color: "#8C806F",
+    fontSize: 15,
+    fontWeight: "900",
+    textAlign: "center",
   },
 
   openTargetButton: {
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 22,
-    backgroundColor: "#FFFCF2",
+    width: 38,
+    height: 38,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 4,
+    backgroundColor: "#F7F1E1",
     borderWidth: 1,
     borderColor: "#D8CCAA",
   },
 
+  openTargetButtonSelected: {
+    backgroundColor: "rgba(255, 255, 255, 0.18)",
+    borderColor: "rgba(255, 255, 255, 0.5)",
+  },
+
   openTargetButtonText: {
-    color: "#3D3528",
-    fontWeight: "700",
-    fontSize: 13,
+    color: "#247322",
+    fontWeight: "900",
+    fontSize: 16,
+    lineHeight: 18,
+  },
+
+  openTargetButtonTextSelected: {
+    color: "#fff",
   },
 
   originChoiceCard: {
@@ -1622,6 +3033,32 @@ const styles = StyleSheet.create({
     color: "#fff",
   },
 
+  choiceOrderRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+  },
+  choiceOrderButton: {
+    borderWidth: 1,
+    borderColor: "#B8CDA4",
+    borderRadius: 999,
+    paddingVertical: 7,
+    paddingHorizontal: 11,
+    backgroundColor: "#F1F7E9",
+  },
+  choiceOrderButtonDisabled: {
+    borderColor: "#DDD6C5",
+    backgroundColor: "#F4F1E9",
+  },
+  choiceOrderText: {
+    color: "#247322",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  choiceOrderTextDisabled: {
+    color: "#A39A8B",
+  },
   choiceActionStack: {
     marginTop: 4,
     gap: 4,
@@ -1688,6 +3125,75 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
 
+  valueChangeEditor: {
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+    borderRadius: 14,
+    padding: 10,
+    marginBottom: 10,
+    backgroundColor: "#FFFCF2",
+  },
+
+  valueChangeEditorHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    marginBottom: 8,
+  },
+
+  valueChangeAmountRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+
+  valueChangeAmountInput: {
+    minWidth: 84,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: "#8BA676",
+    borderRadius: 12,
+    backgroundColor: "#FFFFFF",
+    color: "#2A251D",
+    fontSize: 16,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+
+  removeValueChangeButton: {
+    minHeight: 40,
+    justifyContent: "center",
+    paddingHorizontal: 8,
+  },
+
+  removeValueChangeText: {
+    color: "#A44132",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+
+  addValueChangeButton: {
+    minHeight: 46,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    marginTop: 2,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#4F7F3B",
+    borderRadius: 14,
+    backgroundColor: "#EEF6E7",
+  },
+
+  addValueChangeButtonText: {
+    color: "#2D6B2F",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+
   valueChip: {
     paddingVertical: 6,
     paddingHorizontal: 10,
@@ -1700,6 +3206,14 @@ const styles = StyleSheet.create({
   valueChipText: {
     fontSize: 12,
     color: "#3D3528",
+  },
+
+  valueChipDisabled: {
+    opacity: 0.42,
+  },
+
+  valueChipTextDisabled: {
+    color: "#746E63",
   },
   mainSectionHeading: {
     fontSize: 30,
@@ -1737,6 +3251,225 @@ const styles = StyleSheet.create({
     lineHeight: 24,
   },
 
+  richTextToolbar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    marginBottom: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+    backgroundColor: "#F9F5E8",
+  },
+
+  richTextToolbarLabel: {
+    flex: 1,
+    color: "#665D4E",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  richTextToolbarButtons: {
+    flexDirection: "row",
+    gap: 6,
+  },
+
+  richTextButton: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#8AAA72",
+    backgroundColor: "#FFFDF7",
+  },
+
+  richTextButtonDisabled: {
+    opacity: 0.35,
+  },
+
+  richTextButtonText: {
+    color: "#28751F",
+    fontSize: 16,
+  },
+
+  richTextPreview: {
+    marginBottom: 12,
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#C9D8B8",
+    backgroundColor: "#F2F8E9",
+  },
+
+  richTextPreviewLabel: {
+    color: "#28751F",
+    fontSize: 11,
+    fontWeight: "900",
+    marginBottom: 6,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+
+  richTextPreviewText: {
+    color: "#2A251D",
+    fontSize: 15,
+    lineHeight: 22,
+  },
+
+
+  templateHint: {
+    borderLeftWidth: 3,
+    borderLeftColor: "#8AAA72",
+    backgroundColor: "#EEF5E5",
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    marginBottom: 14,
+  },
+  templateHintLabel: {
+    color: "#247322",
+    fontSize: 12,
+    fontWeight: "900",
+    marginBottom: 3,
+  },
+  templateHintText: {
+    color: "#4F493E",
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: "700",
+  },
+  sceneTypeRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 12,
+  },
+
+  sceneTypeButton: {
+    flex: 1,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+    backgroundColor: "#FFFDF7",
+    alignItems: "center",
+  },
+
+  sceneTypeButtonSelected: {
+    backgroundColor: "#247322",
+    borderColor: "#247322",
+  },
+
+  sceneTypeButtonText: {
+    color: "#3D3528",
+    fontWeight: "900",
+  },
+
+  sceneTypeButtonTextSelected: {
+    color: "#fff",
+  },
+
+  dialogueEditorBox: {
+    marginTop: 8,
+    padding: 12,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+    backgroundColor: "#F5EFD9",
+  },
+
+  dialogueEditorTitle: {
+    fontSize: 16,
+    fontWeight: "900",
+    color: "#2A251D",
+    marginBottom: 4,
+  },
+
+  dialogueEditorHint: {
+    color: "#665D4E",
+    lineHeight: 19,
+    fontWeight: "700",
+    marginBottom: 10,
+  },
+
+  dialogueTurnCard: {
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+    borderRadius: 16,
+    padding: 10,
+    marginBottom: 10,
+    backgroundColor: "#FFFDF7",
+  },
+
+  dialogueTurnHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    marginBottom: 8,
+  },
+
+  dialogueTurnNumber: {
+    color: "#665D4E",
+    fontWeight: "900",
+  },
+
+  dialogueRemoveButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    backgroundColor: "#FFF0E9",
+    borderWidth: 1,
+    borderColor: "#E1B7A8",
+  },
+
+  dialogueRemoveButtonText: {
+    color: "#9B3A2F",
+    fontWeight: "900",
+    fontSize: 12,
+  },
+
+  dialogueSpeakerInput: {
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+    borderRadius: 16,
+    padding: 10,
+    marginBottom: 8,
+    backgroundColor: "#FFFCF2",
+    color: "#1F1A14",
+    fontWeight: "800",
+  },
+
+  dialogueLineInput: {
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+    borderRadius: 16,
+    padding: 10,
+    minHeight: 84,
+    backgroundColor: "#FFFCF2",
+    color: "#1F1A14",
+    fontWeight: "600",
+  },
+
+  dialogueAddButton: {
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#6E9358",
+    backgroundColor: "#E9F2DD",
+    alignItems: "center",
+  },
+
+  dialogueAddButtonText: {
+    color: "#247322",
+    fontWeight: "900",
+  },
   storyContext: {
     color: "#4A4034",
     marginBottom: 16,
@@ -1836,6 +3569,267 @@ const styles = StyleSheet.create({
   choiceActionText: {
     color: "#247322",
     fontWeight: "600",
+  },
+
+
+  logicChipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 6,
+    marginBottom: 8,
+  },
+
+  logicChip: {
+    overflow: "hidden",
+    borderRadius: 999,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+
+  logicLockChip: {
+    color: "#6E4D00",
+    backgroundColor: "#FFF0B8",
+  },
+
+  logicMemoryChip: {
+    color: "#247322",
+    backgroundColor: "#E9F2DD",
+  },
+
+  logicValueChip: {
+    color: "#2F5D8C",
+    backgroundColor: "#E8F0FF",
+  },
+
+  logicModalScreen: {
+    flex: 1,
+    backgroundColor: "#F7F1E1",
+  },
+
+  logicModalContent: {
+    padding: 20,
+    paddingTop: 48,
+    paddingBottom: 180,
+  },
+
+  logicModalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 16,
+  },
+
+  logicModalTitle: {
+    color: "#2A251D",
+    fontSize: 30,
+    lineHeight: 34,
+    fontWeight: "900",
+  },
+
+  logicModalSubtitle: {
+    color: "#665D4E",
+    fontSize: 14,
+    fontWeight: "800",
+    marginTop: 3,
+  },
+
+  logicModalCloseButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: "#247322",
+    borderWidth: 1,
+    borderColor: "#247322",
+  },
+
+  logicModalCloseText: {
+    color: "#fff",
+    fontWeight: "900",
+  },
+
+  logicModalSection: {
+    backgroundColor: "#FFFCF2",
+    borderRadius: 22,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+    marginBottom: 14,
+  },
+
+  logicModalSectionTitle: {
+    color: "#2A251D",
+    fontSize: 20,
+    lineHeight: 24,
+    fontWeight: "900",
+    marginBottom: 4,
+  },
+
+  logicModalSectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    marginBottom: 4,
+  },
+
+  logicInfoButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#E9F2DD",
+    borderWidth: 1,
+    borderColor: "#C9DEBA",
+  },
+
+  logicInfoButtonText: {
+    color: "#247322",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+
+  logicRowButton: {
+    alignSelf: "flex-start",
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: "#FFFDF7",
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+    marginBottom: 10,
+  },
+
+  logicRowButtonSelected: {
+    backgroundColor: "#247322",
+    borderColor: "#247322",
+  },
+
+  logicRowButtonText: {
+    color: "#3D3528",
+    fontWeight: "900",
+  },
+
+  logicRowButtonTextSelected: {
+    color: "#fff",
+  },
+
+  logicCompactGroup: {
+    paddingTop: 10,
+    paddingBottom: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#E8DCC2",
+  },
+
+  logicCompactGroupLast: {
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#E8DCC2",
+  },
+
+  logicGroupTitle: {
+    color: "#2A251D",
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: "900",
+    marginBottom: 8,
+  },
+
+  logicDescription: {
+    color: "#6D6250",
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "700",
+    marginBottom: 8,
+  },
+
+  feedbackBox: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#E8DCC2",
+  },
+
+  feedbackInput: {
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+    borderRadius: 14,
+    padding: 10,
+    minHeight: 48,
+    backgroundColor: "#FFFDF7",
+    color: "#1F1A14",
+    fontWeight: "700",
+    textAlignVertical: "top",
+  },
+
+  conditionStateRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+
+  logicEmptyText: {
+    color: "#8C806F",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+
+  logicInlineControls: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  logicModalHelper: {
+    color: "#665D4E",
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: "700",
+    marginBottom: 12,
+  },
+
+  logicOptionButton: {
+    alignSelf: "flex-start",
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: "#FFFDF7",
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+    marginBottom: 6,
+  },
+
+  logicOptionButtonSelected: {
+    backgroundColor: "#247322",
+    borderColor: "#247322",
+  },
+
+  logicOptionText: {
+    color: "#3D3528",
+    fontWeight: "900",
+  },
+
+  logicOptionTextSelected: {
+    color: "#fff",
+  },
+
+  memoryNameBox: {
+    marginTop: 4,
+    marginBottom: 12,
+  },
+
+  memoryNameInput: {
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+    borderRadius: 16,
+    padding: 10,
+    backgroundColor: "#FFFDF7",
+    color: "#1F1A14",
+    fontWeight: "800",
   },
 
   logicSummaryBox: {
@@ -1941,12 +3935,15 @@ const styles = StyleSheet.create({
   },
 
   targetOptionText: {
-    color: "#fff",
+    flex: 1,
+    color: "#3D3528",
+    fontSize: 14,
+    fontWeight: "800",
   },
 
   targetOptionTextSelected: {
     color: "#fff",
-    fontWeight: "800",
+    fontWeight: "900",
   },
 
   createNextSceneButton: {
@@ -1963,13 +3960,199 @@ const styles = StyleSheet.create({
     borderColor: "#D8CCAA",
   },
 
+  sceneAppearanceHelper: {
+    color: "#665D4E",
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 6,
+    marginBottom: 14,
+  },
+
+  sceneAppearanceToggle: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+    backgroundColor: "#F9F5E8",
+  },
+
+  sceneAppearanceOverrideBox: {
+    marginTop: 14,
+    padding: 14,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#B8CDA5",
+    backgroundColor: "#F2F8E9",
+  },
+
+  appearanceOptionLabel: {
+    color: "#2A251D",
+    fontSize: 14,
+    fontWeight: "900",
+    marginTop: 14,
+    marginBottom: 8,
+  },
+
+  sceneAppearanceStatus: {
+    color: "#28751F",
+    fontSize: 13,
+    fontWeight: "800",
+    marginBottom: 9,
+  },
+
+  appearanceOptionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+
+  appearanceOptionButton: {
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#CFC5A8",
+    backgroundColor: "#FFFDF7",
+  },
+
+  appearanceOptionButtonSelected: {
+    borderColor: "#28751F",
+    backgroundColor: "#28751F",
+  },
+
+  appearanceOptionText: {
+    color: "#4B4438",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+
+  appearanceOptionTextSelected: {
+    color: "#FFFFFF",
+  },
+
+  sceneAppearanceActionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+  },
+
+  sceneAppearanceActionButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: "#28751F",
+  },
+
+  sceneAppearanceActionText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+
+  sceneAppearanceGhostButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#BEB392",
+    backgroundColor: "#FFFDF7",
+  },
+
+  sceneAppearanceGhostText: {
+    color: "#4B4438",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+
+  sceneThemeButton: {
+    minWidth: 92,
+    padding: 10,
+    borderRadius: 14,
+    borderWidth: 2,
+  },
+
+  sceneThemeButtonSelected: {
+    borderWidth: 3,
+  },
+
+  sceneThemeSwatch: {
+    height: 12,
+    borderRadius: 999,
+    marginBottom: 7,
+  },
+
+  sceneThemeText: {
+    fontSize: 12,
+    fontWeight: "900",
+  },
+
+  resetSceneAppearanceButton: {
+    alignSelf: "flex-start",
+    marginTop: 18,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#C86B55",
+    backgroundColor: "#FFF7F3",
+  },
+
+  resetSceneAppearanceText: {
+    color: "#9B4938",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+
+  sectionTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 12,
+  },
+
   sectionTitle: {
     fontSize: 22,
     fontWeight: "900",
-    marginBottom: 12,
     color: "#2A251D",
   },
 
+  quickActionRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 14,
+  },
+  quickActionButton: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#8AAA72",
+    backgroundColor: "#F1F7E9",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 10,
+  },
+  quickActionText: {
+    color: "#247322",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  headerBackButton: {
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerBackButtonText: {
+    color: "#2A2720",
+    fontSize: 30,
+    lineHeight: 34,
+    fontWeight: "500",
+  },
   backButton: {
     paddingVertical: 12,
     paddingHorizontal: 14,
@@ -1986,15 +4169,11 @@ const styles = StyleSheet.create({
     color: "#3D3528",
   },
 
-  mediaDescription: {
-    color: "#665D4E",
-    lineHeight: 20,
-    marginBottom: 12,
-  },
 
   mediaStatus: {
     color: "#665D4E",
-    marginBottom: 12,
+    marginBottom: 14,
+    fontWeight: "700",
   },
 
   mediaButton: {
@@ -2012,6 +4191,92 @@ const styles = StyleSheet.create({
     color: "#3D3528",
   },
 
+  addChoiceStatusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 4,
+    marginBottom: 24,
+  },
+
+  sceneStatusChip: {
+    minHeight: 48,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 22,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+    backgroundColor: "#FFFDF7",
+  },
+
+  startStatusChip: {
+    backgroundColor: "#E9F2DD",
+    borderColor: "#C9DEBA",
+  },
+
+  endingStatusChip: {
+    backgroundColor: "#FFFDF7",
+  },
+
+  endingStatusChipActive: {
+    borderColor: "#D8CCAA",
+    backgroundColor: "#FFF0B8",
+  },
+
+  sceneStatusText: {
+    fontSize: 14,
+    fontWeight: "800",
+  },
+
+  startStatusText: {
+    color: "#247322",
+  },
+
+  endingStatusText: {
+    color: "#8C806F",
+  },
+
+  endingStatusTextActive: {
+    color: "#6E4D00",
+  },
+
+  statusInfoButton: {
+    width: 22,
+    height: 22,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255, 253, 247, 0.72)",
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+  },
+
+  statusInfoButtonText: {
+    color: "#4F6F52",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  addChoicePrimaryButton: {
+    flex: 1,
+    backgroundColor: "#247322",
+    borderRadius: 22,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#247322",
+  },
+
+  addChoicePrimaryText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "800",
+  },
   addChoiceCard: {
     backgroundColor: "#FFFCF2",
     borderRadius: 22,
@@ -2045,6 +4310,26 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFDF7",
   },
 
+  addChoiceButtonRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+
+  addChoiceCancelButton: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 18,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#D8CCAA",
+    backgroundColor: "#FFFDF7",
+  },
+
+  addChoiceCancelText: {
+    fontWeight: "700",
+    color: "#665D4E",
+  },
   addChoiceButton: {
     paddingVertical: 12,
     paddingHorizontal: 14,
@@ -2055,6 +4340,11 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFDF7",
   },
 
+  addChoiceSubmitButton: {
+    flex: 1,
+    backgroundColor: "#247322",
+    borderColor: "#247322",
+  },
   addChoiceButtonDisabled: {
     opacity: 0.5,
   },
@@ -2064,6 +4354,9 @@ const styles = StyleSheet.create({
     color: "#3D3528",
   },
 
+  addChoiceSubmitButtonText: {
+    color: "#fff",
+  },
   addChoiceButtonTextDisabled: {
     color: "#8C806F",
   },

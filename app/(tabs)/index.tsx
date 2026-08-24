@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -8,10 +8,11 @@ import {
   ScrollView,
   Modal,
 } from "react-native";
-import { router } from "expo-router";
+import { router, useNavigationContainerRef } from "expo-router";
 import { useStoryStore } from "../../store/storyStore";
 import * as DocumentPicker from "expo-document-picker";
-import * as FileSystem from "expo-file-system/legacy";
+import { validateStoryImport } from "../../utils/storyData";
+import { readPickedTextFile } from "../../utils/platformFiles";
 
 const STORY_ICON_PRESETS = [
   "🪲",
@@ -29,9 +30,13 @@ const STORY_ICON_PRESETS = [
 ];
 
 export default function HomeScreen() {
+  const navigationRef = useNavigationContainerRef();
   const stories = useStoryStore((state) => state.stories);
   const openStory = useStoryStore((state) => state.openStory);
   const hasHydrated = useStoryStore((state) => state._hasHydrated);
+  const hasCompletedWelcome = useStoryStore(
+    (state) => state.hasCompletedWelcome,
+  );
   const deleteStory = useStoryStore((state) => state.deleteStory);
   const importStory = useStoryStore((state) => state.importStory);
   const loadDemoStory = useStoryStore((state) => state.loadDemoStory);
@@ -46,7 +51,27 @@ export default function HomeScreen() {
   );
   const emptySlots = Math.max(0, Math.min(4, 6 - (stories.length + 1)));
 
-  if (!hasHydrated) {
+  useEffect(() => {
+    if (!hasHydrated || hasCompletedWelcome) return;
+
+    let frame: number;
+    const redirectWhenReady = () => {
+      if (navigationRef.isReady()) {
+        router.replace({
+          pathname: "/welcome",
+          params: { firstLaunch: "true" },
+        });
+        return;
+      }
+
+      frame = requestAnimationFrame(redirectWhenReady);
+    };
+
+    frame = requestAnimationFrame(redirectWhenReady);
+    return () => cancelAnimationFrame(frame);
+  }, [hasCompletedWelcome, hasHydrated, navigationRef]);
+
+  if (!hasHydrated || !hasCompletedWelcome) {
     return (
       <View style={styles.loadingContainer}>
         <Text>Loading story...</Text>
@@ -59,6 +84,7 @@ export default function HomeScreen() {
       const result = await DocumentPicker.getDocumentAsync({
         type: "application/json",
         copyToCacheDirectory: true,
+        base64: false,
       });
 
       if (result.canceled) return;
@@ -66,20 +92,20 @@ export default function HomeScreen() {
       const file = result.assets[0];
       if (!file?.uri) return;
 
-      const jsonString = await FileSystem.readAsStringAsync(file.uri);
+      const jsonString = await readPickedTextFile(file);
       const parsed = JSON.parse(jsonString);
 
-      // very basic validation
-      if (!parsed.id || !parsed.title || !Array.isArray(parsed.scenes)) {
+      const validation = validateStoryImport(parsed);
+      if (!validation.valid) {
         Alert.alert(
           "Import failed",
-          "This file does not look like a valid story JSON.",
+          validation.message,
         );
         return;
       }
 
       importStory(parsed);
-      Alert.alert("Import successful", `"${parsed.title}" was imported.`);
+      Alert.alert("Import successful", `"${parsed.title || "Untitled story"}" was imported.`);
       router.push("/story");
     } catch (error) {
       console.error("Import error:", error);
@@ -171,10 +197,12 @@ export default function HomeScreen() {
         </Pressable>
 
         <Pressable
-          style={styles.secondaryButtonCompact}
+          style={[styles.secondaryButtonCompact, styles.welcomeButton]}
           onPress={() => router.push("/welcome")}
         >
-          <Text style={styles.secondaryButtonText}>Welcome</Text>
+          <Text style={[styles.secondaryButtonText, styles.welcomeButtonText]}>
+            Help
+          </Text>
         </Pressable>
       </View>
 
@@ -248,10 +276,16 @@ export default function HomeScreen() {
           <View style={styles.emptyStateInline}>
             <Text style={styles.emptyStateTitle}>No stories yet</Text>
             <Text style={styles.emptyStateText}>
-              Start with New, import a story, or load the demo.
+              Start with New or import a story.
             </Text>
           </View>
         )}
+      </View>
+
+      <View style={styles.importRow}>
+        <Pressable style={styles.buttonSecondary} onPress={handleImportJson}>
+          <Text style={styles.buttonTextSecondary}>Import story</Text>
+        </Pressable>
       </View>
 
       <Modal
@@ -444,6 +478,15 @@ const styles = StyleSheet.create({
     color: "#4A3D24",
     fontSize: 15,
     fontWeight: "800",
+  },
+
+  welcomeButton: {
+    backgroundColor: "#FFE4EC",
+    borderColor: "#F3A8BD",
+  },
+
+  welcomeButtonText: {
+    color: "#7A2F45",
   },
 
   sectionHeaderRow: {

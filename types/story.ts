@@ -8,11 +8,13 @@ export type StoryValueDefinition = {
 };
 
 export type StoryValueChange = {
+  valueId: string;
+  amount: number;
+};
+
+export type LegacyStoryValueChange = {
   valueId?: string;
-
-  // legacy support, in case older choices used name-based values
   name?: string;
-
   amount: number;
 };
 
@@ -27,7 +29,7 @@ export type StoryValueCondition = {
 };
 
 export type Choice = {
-  id?: string;
+  id: string;
   label: string;
   targetSceneId?: string;
 
@@ -38,9 +40,18 @@ export type Choice = {
   // remembered-choice system
   rememberChoice?: boolean;
   requiredChoiceId?: string;
+  requiredChoiceState?: 'remembered' | 'notRemembered';
+  memoryName?: string;
+  rememberFeedbackEnabled?: boolean;
+  rememberFeedbackMessage?: string;
 
   // story-level values
-  valueChange?: StoryValueChange;
+  valueChanges?: StoryValueChange[];
+
+  // legacy single-value effect, normalized on load/import
+  valueChange?: LegacyStoryValueChange;
+  valueFeedbackEnabled?: boolean;
+  valueFeedbackMessage?: string;
   requiredValue?: StoryValueCondition;
 };
 
@@ -54,24 +65,79 @@ export type SceneAsset =
       width: number;
       height: number;
       alt?: string;
+      libraryItemId?: string;
+      reusedFromAssetId?: string;
     }
   | {
       id: string;
       type: 'audio';
       uri: string;
       name?: string;
+      libraryItemId?: string;
+      reusedFromAssetId?: string;
     };
+
+export type DialogueTurn = {
+  id: string;
+  speaker: string;
+  text: string;
+};
+
+export type BackgroundMusic = {
+  type?: 'uploaded' | 'built-in';
+  uri?: string;
+  builtInId?: string;
+  name?: string;
+};
+
+export type ScenePlaySettingsOverride = {
+  playAppearance: PlayAppearance;
+  backgroundMusic: BackgroundMusic | null;
+};
+
+export type RichTextFormat = {
+  start: number;
+  end: number;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+};
 
 export type Scene = {
   id: string;
   title: string;
   text: string;
+  textFormatting?: RichTextFormat[];
+  sceneType?: 'story' | 'dialogue';
+  dialogueTurns?: DialogueTurn[];
   choices: Choice[];
   assets: SceneAsset[];
   isDone?: boolean;
+  playSettingsOverride?: ScenePlaySettingsOverride;
 };
 
 export type StoryMode = 'personal' | 'symbolic' | 'fictional';
+
+export type PlayFontId =
+  | 'branchBeetle'
+  | 'storySerif'
+  | 'friendly'
+  | 'typewriter';
+
+export type PlayTextSizeId = 'small' | 'standard' | 'large';
+
+export type PlayThemeId =
+  | 'branchBeetle'
+  | 'paper'
+  | 'forest'
+  | 'night'
+  | 'berry';
+
+export type PlayAppearance = {
+  font: PlayFontId;
+  textSize: PlayTextSizeId;
+  theme: PlayThemeId;
+};
 
 export type StoryProject = {
   id: string;
@@ -79,9 +145,11 @@ export type StoryProject = {
   mode: StoryMode;
   scenes: Scene[];
   showSceneTitlesInPlay?: boolean;
+  autoplayBackgroundMusic?: boolean;
+  autoplayVoiceNotes?: boolean;
+  playAppearance?: PlayAppearance;
+  icon?: string;
+  editorHints?: Record<string, string>;
   storyValues?: StoryValueDefinition[];
-  backgroundMusic?: {
-  uri: string;
-  name?: string;
-};
+  backgroundMusic?: BackgroundMusic;
 };

@@ -1,6 +1,6 @@
-import { View, Text, StyleSheet, Pressable, ScrollView, Alert } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ScrollView, Alert, Image } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useStoryStore } from '../store/storyStore';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
@@ -37,6 +37,11 @@ function DraggableAsset({
 }) {
   const imageX = useSharedValue(asset.x || 0);
   const imageY = useSharedValue(asset.y || 0);
+
+  useEffect(() => {
+    imageX.value = asset.x || 0;
+    imageY.value = asset.y || 0;
+  }, [asset.x, asset.y, imageX, imageY]);
 
   const CANVAS_WIDTH = 400;
   const CANVAS_HEIGHT = 260;
@@ -124,27 +129,102 @@ function SectionHeader({ title, info }: { title: string; info: string }) {
 
 export default function SceneMediaScreen() {
   const { sceneId } = useLocalSearchParams();
+  const requestedSceneId = typeof sceneId === 'string' ? sceneId : undefined;
 
   const currentStory = useStoryStore((state) => state.getCurrentStory());
   const updateScene = useStoryStore((state) => state.updateScene);
+  const toggleAutoplayVoiceNotes = useStoryStore(
+    (state) => state.toggleAutoplayVoiceNotes,
+  );
+  const autoplayVoiceNotes = currentStory?.autoplayVoiceNotes ?? false;
 
   const scenes = currentStory?.scenes || [];
-  const scene = scenes.find((s) => s.id === sceneId);
-  const sceneIndex = scenes.findIndex((s) => s.id === sceneId);
+  const scene = scenes.find((s) => s.id === requestedSceneId);
+  const sceneIndex = scenes.findIndex((s) => s.id === requestedSceneId);
 
   const [assets, setAssets] = useState(scene?.assets || []);
+  const assetsRef = useRef(scene?.assets || []);
+  const mediaActionInProgress = useRef(false);
+  const recordingSaveInProgress = useRef(false);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+  const [isMediaLibraryExpanded, setIsMediaLibraryExpanded] = useState(false);
+  const loadedSceneIdRef = useRef<string | undefined>(undefined);
 
   const imageAssets = assets.filter((asset) => asset.type === 'image');
   const audioAsset = assets.find((asset) => asset.type === 'audio');
 
   const drawingAssets = imageAssets.filter((asset) => asset.alt === 'Drawing');
   const firstDrawingAsset = drawingAssets[0];
+  const selectedImageAsset = imageAssets.find((asset) => asset.id === selectedAssetId);
+  const selectedImageSize = selectedImageAsset
+    ? selectedImageAsset.width <= 140
+      ? 'small'
+      : selectedImageAsset.width >= 300
+        ? 'large'
+        : 'medium'
+    : undefined;
+
+  const getLibraryItemId = (asset: any) =>
+    asset.libraryItemId || asset.reusedFromAssetId || asset.id || asset.uri;
+
+  const mediaLibraryAssets: any[] = Array.from(
+    scenes
+      .flatMap((libraryScene) =>
+        (libraryScene.assets || [])
+          .filter((asset: any) => asset.uri)
+          .map((asset: any) => ({
+            ...asset,
+            libraryItemId: getLibraryItemId(asset),
+            sourceSceneId: libraryScene.id,
+            sourceSceneTitle: libraryScene.title || 'Untitled scene',
+          })),
+      )
+      .reduce((uniqueAssets, asset: any) => {
+        if (!uniqueAssets.has(asset.libraryItemId)) {
+          uniqueAssets.set(asset.libraryItemId, asset);
+        }
+        return uniqueAssets;
+      }, new Map<string, any>())
+      .values(),
+  );
+
+  const visualLibraryAssets = mediaLibraryAssets.filter(
+    (asset: any) => asset.type === 'image',
+  );
+  const audioLibraryAssets = mediaLibraryAssets.filter(
+    (asset: any) => asset.type === 'audio',
+  );
+
+  const mediaLibrarySummary =
+    visualLibraryAssets.length > 0 || audioLibraryAssets.length > 0
+      ? [
+          visualLibraryAssets.length > 0
+            ? `${visualLibraryAssets.length} image${visualLibraryAssets.length === 1 ? '' : 's'}/drawing${visualLibraryAssets.length === 1 ? '' : 's'}`
+            : null,
+          audioLibraryAssets.length > 0
+            ? `${audioLibraryAssets.length} audio`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : 'No reusable media yet';
 
   useEffect(() => {
-    setAssets(scene?.assets || []);
-    setSelectedAssetId(null);
-  }, [sceneId, scene]);
+    const nextAssets = scene?.assets || [];
+    assetsRef.current = nextAssets;
+    setAssets(nextAssets);
+
+    if (loadedSceneIdRef.current !== scene?.id) {
+      setSelectedAssetId(null);
+      loadedSceneIdRef.current = scene?.id;
+    } else {
+      setSelectedAssetId((currentId) =>
+        currentId && nextAssets.some((asset) => asset.id === currentId)
+          ? currentId
+          : null,
+      );
+    }
+  }, [scene?.assets, scene?.id]);
 
 const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
 const recorderState = useAudioRecorderState(audioRecorder);
@@ -168,19 +248,103 @@ const getNextImagePosition = (currentAssets: any[]) => {
   };
 };
 
-const saveAssetsToScene = (nextAssets = assets) => {
-  if (!scene || sceneIndex === -1) return;
+const dedupeSceneAssets = (nextAssets: any[]) => {
+  const seenAttachmentIds = new Set<string>();
 
-  updateScene(sceneIndex, {
-    ...scene,
-    assets: nextAssets,
+  return nextAssets.filter((asset) => {
+    const attachmentId = asset.id || `${asset.type}:${asset.uri}`;
+    if (seenAttachmentIds.has(attachmentId)) return false;
+    seenAttachmentIds.add(attachmentId);
+    return true;
+  });
+};
+
+const persistAssetsToScene = (nextAssets = assetsRef.current) => {
+  if (!scene) return;
+
+  const uniqueAssets = dedupeSceneAssets(nextAssets);
+  updateScene(scene.id, { assets: uniqueAssets });
+};
+
+const updateAssets = (getNextAssets: any[] | ((currentAssets: any[]) => any[])) => {
+  const currentAssets = assetsRef.current;
+  const nextAssets =
+    typeof getNextAssets === 'function'
+      ? getNextAssets(currentAssets)
+      : getNextAssets;
+  const uniqueAssets = dedupeSceneAssets(nextAssets);
+
+  assetsRef.current = uniqueAssets;
+  setAssets(uniqueAssets);
+  persistAssetsToScene(uniqueAssets);
+};
+
+const addAssetFromLibrary = (libraryAsset: any) => {
+  const libraryItemId =
+    libraryAsset.libraryItemId || libraryAsset.id || libraryAsset.uri;
+
+  updateAssets((currentAssets) => {
+    if (currentAssets.some((asset) => getLibraryItemId(asset) === libraryItemId)) {
+      return currentAssets;
+    }
+
+    return [
+    ...currentAssets,
+    {
+      id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      type: 'image',
+      uri: libraryAsset.uri,
+      ...getNextImagePosition(currentAssets),
+      width: libraryAsset.width || 220,
+      height: libraryAsset.height || 160,
+      alt: libraryAsset.alt || '',
+      libraryItemId: libraryAsset.libraryItemId || libraryAsset.id || libraryAsset.uri,
+      reusedFromAssetId: libraryAsset.id,
+    },
+    ];
+  });
+};
+
+const addAudioFromLibrary = (libraryAsset: any) => {
+  stopPreviewAudio();
+
+  updateAssets((currentAssets) => [
+    ...currentAssets.filter((asset) => asset.type !== 'audio'),
+    {
+      id: `audio-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      type: 'audio',
+      uri: libraryAsset.uri,
+      name: libraryAsset.name || 'Audio file',
+      libraryItemId: libraryAsset.libraryItemId || libraryAsset.id || libraryAsset.uri,
+      reusedFromAssetId: libraryAsset.id,
+    },
+  ]);
+};
+
+const returnToSceneEditor = () => {
+  if (!scene) return;
+
+  stopPreviewAudio();
+  persistAssetsToScene();
+
+  if (router.canGoBack()) {
+    router.back();
+    return;
+  }
+
+  router.replace({
+    pathname: '/scene-editor',
+    params: {
+      sceneId: scene.id,
+      restoreScroll: 'true',
+    },
   });
 };
 
 const openDrawingPad = (drawingAssetId?: string) => {
   if (!scene || sceneIndex === -1) return;
 
-  saveAssetsToScene();
+  persistAssetsToScene();
 
   router.push({
     pathname: '/draw',
@@ -209,7 +373,7 @@ const openDrawingPad = (drawingAssetId?: string) => {
   const moveSelectedAssetLayer = (direction: 'forward' | 'backward') => {
   if (!selectedAssetId) return;
 
-  setAssets((currentAssets) => {
+  updateAssets((currentAssets) => {
     const index = currentAssets.findIndex(
       (asset) => asset.id === selectedAssetId
     );
@@ -232,7 +396,8 @@ const openDrawingPad = (drawingAssetId?: string) => {
 };
 
   const resizeSelectedAsset = (size: 'small' | 'medium' | 'large') => {
-  if (!selectedAssetId) return;
+  const assetId = selectedAssetId;
+  if (!assetId) return;
 
   const sizes = {
     small: { width: 140, height: 100 },
@@ -240,9 +405,9 @@ const openDrawingPad = (drawingAssetId?: string) => {
     large: { width: 300, height: 220 },
   };
 
-  setAssets((currentAssets) =>
+  updateAssets((currentAssets) =>
     currentAssets.map((asset) =>
-      asset.id === selectedAssetId
+      asset.id === assetId && asset.type === 'image'
         ? {
             ...asset,
             width: sizes[size].width,
@@ -251,10 +416,12 @@ const openDrawingPad = (drawingAssetId?: string) => {
         : asset
     )
   );
+
+  setSelectedAssetId(assetId);
 };
 
   const updateAssetPosition = (id: string, x: number, y: number) => {
-    setAssets((currentAssets) =>
+    updateAssets((currentAssets) =>
       currentAssets.map((asset) =>
         asset.id === id ? { ...asset, x, y } : asset
       )
@@ -262,6 +429,10 @@ const openDrawingPad = (drawingAssetId?: string) => {
   };
 
   const pickImage = async () => {
+    if (mediaActionInProgress.current) return;
+    mediaActionInProgress.current = true;
+
+    try {
     const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
 
     if (!permissionResult.granted) {
@@ -281,18 +452,23 @@ const openDrawingPad = (drawingAssetId?: string) => {
 
     if (!selected?.uri) return;
 
-    setAssets((currentAssets) => [
+    const attachmentId = `asset-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    updateAssets((currentAssets) => [
       ...currentAssets,
       {
-        id: `asset-${Date.now()}`,
+        id: attachmentId,
         type: 'image',
         uri: selected.uri,
         ...getNextImagePosition(currentAssets),
         width: 220,
         height: 160,
         alt: '',
+        libraryItemId: attachmentId,
       },
     ]);
+    } finally {
+      mediaActionInProgress.current = false;
+    }
   };
 
 const startRecording = async () => {
@@ -316,6 +492,10 @@ const startRecording = async () => {
 };
 
 const stopRecording = async () => {
+  if (recordingSaveInProgress.current) return;
+  recordingSaveInProgress.current = true;
+
+  try {
   await audioRecorder.stop();
 
   const recordedUri = audioRecorder.uri;
@@ -338,18 +518,27 @@ const stopRecording = async () => {
 
   stopPreviewAudio();
 
-  setAssets((currentAssets) => [
+  const attachmentId = `audio-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  updateAssets((currentAssets) => [
     ...currentAssets.filter((asset) => asset.type !== 'audio'),
     {
-      id: `audio-${Date.now()}`,
+      id: attachmentId,
       type: 'audio',
       uri: permanentUri,
       name: `Voice note ${new Date().toLocaleTimeString()}`,
+      libraryItemId: attachmentId,
     },
   ]);
+  } finally {
+    recordingSaveInProgress.current = false;
+  }
 };
 
 const pickAudio = async () => {
+  if (mediaActionInProgress.current) return;
+  mediaActionInProgress.current = true;
+
+  try {
   const result = await DocumentPicker.getDocumentAsync({
     type: 'audio/*',
     copyToCacheDirectory: true,
@@ -363,40 +552,31 @@ const pickAudio = async () => {
 
   stopPreviewAudio();
 
-  setAssets((currentAssets) => [
+  const attachmentId = `audio-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  updateAssets((currentAssets) => [
     ...currentAssets.filter((asset) => asset.type !== 'audio'),
     {
-      id: `audio-${Date.now()}`,
+      id: attachmentId,
       type: 'audio',
       uri: file.uri,
       name: file.name || 'Audio file',
+      libraryItemId: attachmentId,
     },
   ]);
+  } finally {
+    mediaActionInProgress.current = false;
+  }
 };
 
 
-  const saveMedia = () => {
-    stopPreviewAudio();
-    saveAssetsToScene();
 
-    router.replace({
-      pathname: '/scene-editor',
-      params: {
-        sceneId: scene.id,
-      },
-    });
-  };
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <Pressable
         style={styles.backButton}
-        onPress={() =>
-          router.replace({
-            pathname: '/scene-editor',
-            params: { sceneId: scene.id },
-          })
-        }
+        onPress={returnToSceneEditor}
+
       >
         <Text style={styles.backButtonText}>← Scene</Text>
       </Pressable>
@@ -409,6 +589,105 @@ const pickAudio = async () => {
           <Text style={styles.heading}>Scene media</Text>
           <Text style={styles.sceneContext}>{scene.title || 'Untitled scene'}</Text>
         </View>
+      </View>
+
+      <View style={styles.section}>
+        <View style={styles.sectionHeaderRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.sectionTitle}>Media library</Text>
+            <Text style={styles.librarySummaryText}>{mediaLibrarySummary}</Text>
+          </View>
+
+          <InfoButton
+            title="Media library"
+            message="Reuse drawings, images, voice notes, and audio that already exist in this story. Visual media is copied into this scene. Audio replaces this scene's current audio."
+          />
+
+          <Pressable
+            style={styles.libraryToggleButton}
+            onPress={() => setIsMediaLibraryExpanded((isExpanded) => !isExpanded)}
+          >
+            <Text style={styles.libraryToggleButtonText}>
+              {isMediaLibraryExpanded ? 'Hide' : 'Show'}
+            </Text>
+          </Pressable>
+        </View>
+
+        {isMediaLibraryExpanded && (
+          <View>
+            {visualLibraryAssets.length > 0 || audioLibraryAssets.length > 0 ? (
+              <View>
+                {visualLibraryAssets.length > 0 && (
+                  <View>
+                    <Text style={styles.libraryGroupTitle}>Drawings and images</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator>
+                      <View style={styles.libraryRow}>
+                        {visualLibraryAssets.map((asset, index) => (
+                          <View
+                            key={`${asset.sourceSceneId}-${asset.id}-${index}`}
+                            style={styles.libraryCard}
+                          >
+                            <Image
+                              source={{ uri: asset.uri }}
+                              style={styles.libraryThumbnail}
+                              resizeMode={asset.alt === 'Drawing' ? 'contain' : 'cover'}
+                            />
+                            <Text style={styles.libraryAssetType}>
+                              {asset.alt === 'Drawing' ? 'Drawing' : 'Image'}
+                            </Text>
+                            <Text style={styles.librarySource} numberOfLines={2}>
+                              {asset.sourceSceneTitle}
+                            </Text>
+                            <Pressable
+                              style={styles.libraryUseButton}
+                              onPress={() => addAssetFromLibrary(asset)}
+                            >
+                              <Text style={styles.libraryUseButtonText}>Use here</Text>
+                            </Pressable>
+                          </View>
+                        ))}
+                      </View>
+                    </ScrollView>
+                  </View>
+                )}
+
+                {audioLibraryAssets.length > 0 && (
+                  <View>
+                    <Text style={styles.libraryGroupTitle}>Voice notes and audio</Text>
+                    <View style={styles.audioLibraryStack}>
+                      {audioLibraryAssets.map((asset: any, index) => (
+                        <View
+                          key={`${asset.sourceSceneId}-${asset.id}-${index}`}
+                          style={styles.audioLibraryCard}
+                        >
+                          <View style={styles.audioLibraryIcon}>
+                            <Text style={styles.audioLibraryIconText}>♪</Text>
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.audioLibraryName} numberOfLines={1}>
+                              {asset.name || 'Audio file'}
+                            </Text>
+                            <Text style={styles.librarySource} numberOfLines={2}>
+                              {asset.sourceSceneTitle}
+                            </Text>
+                          </View>
+                          <Pressable
+                            style={styles.libraryUseButton}
+                            onPress={() => addAudioFromLibrary(asset)}
+                          >
+                            <Text style={styles.libraryUseButtonText}>Use here</Text>
+                          </Pressable>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                )}
+              </View>
+            ) : (
+              <Text style={styles.empty}>No reusable media in this story yet.</Text>
+            )}
+          </View>
+        )}
       </View>
 
       <View style={styles.section}>
@@ -425,7 +704,7 @@ const pickAudio = async () => {
           <Pressable
             style={styles.buttonSecondary}
             onPress={() => {
-              setAssets((currentAssets) =>
+              updateAssets((currentAssets) =>
                   currentAssets.filter((asset) => asset.type !== 'image')
                 );
               setSelectedAssetId(null);
@@ -454,31 +733,70 @@ const pickAudio = async () => {
           <Text style={styles.empty}>No images yet.</Text>
         )}
 
-{selectedAssetId && (
+{selectedImageAsset && (
   <View style={styles.selectedAssetPanel}>
     <Text style={styles.selectedAssetTitle}>Selected image</Text>
     <Text style={styles.selectedAssetMeta}>Use the buttons below, or drag the selected image in the canvas.</Text>
 
     <View style={styles.sizeButtonRow}>
       <Pressable
-        style={styles.sizeButton}
+        style={[
+          styles.sizeButton,
+          selectedImageSize === 'small' && styles.sizeButtonSelected,
+        ]}
         onPress={() => resizeSelectedAsset('small')}
+        accessibilityRole="button"
+        accessibilityLabel="Set image size to small"
+        accessibilityState={{ selected: selectedImageSize === 'small' }}
       >
-        <Text style={styles.sizeButtonText}>Small</Text>
+        <Text
+          style={[
+            styles.sizeButtonText,
+            selectedImageSize === 'small' && styles.sizeButtonTextSelected,
+          ]}
+        >
+          Small
+        </Text>
       </Pressable>
 
       <Pressable
-        style={styles.sizeButton}
+        style={[
+          styles.sizeButton,
+          selectedImageSize === 'medium' && styles.sizeButtonSelected,
+        ]}
         onPress={() => resizeSelectedAsset('medium')}
+        accessibilityRole="button"
+        accessibilityLabel="Set image size to medium"
+        accessibilityState={{ selected: selectedImageSize === 'medium' }}
       >
-        <Text style={styles.sizeButtonText}>Medium</Text>
+        <Text
+          style={[
+            styles.sizeButtonText,
+            selectedImageSize === 'medium' && styles.sizeButtonTextSelected,
+          ]}
+        >
+          Medium
+        </Text>
       </Pressable>
 
       <Pressable
-        style={styles.sizeButton}
+        style={[
+          styles.sizeButton,
+          selectedImageSize === 'large' && styles.sizeButtonSelected,
+        ]}
         onPress={() => resizeSelectedAsset('large')}
+        accessibilityRole="button"
+        accessibilityLabel="Set image size to large"
+        accessibilityState={{ selected: selectedImageSize === 'large' }}
       >
-        <Text style={styles.sizeButtonText}>Large</Text>
+        <Text
+          style={[
+            styles.sizeButtonText,
+            selectedImageSize === 'large' && styles.sizeButtonTextSelected,
+          ]}
+        >
+          Large
+        </Text>
       </Pressable>
 
     </View>
@@ -500,12 +818,21 @@ const pickAudio = async () => {
     <Text style={styles.layerButtonText}>Bring forward</Text>
   </Pressable>
 </View>
+
+    {selectedImageAsset?.alt === 'Drawing' && (
+      <Pressable
+        style={styles.buttonSecondary}
+        onPress={() => openDrawingPad(selectedImageAsset.id)}
+      >
+        <Text style={styles.buttonSecondaryText}>Edit selected drawing</Text>
+      </Pressable>
+    )}
     
 
     <Pressable
       style={styles.buttonSecondary}
       onPress={() => {
-        setAssets((currentAssets) =>
+        updateAssets((currentAssets) =>
           currentAssets.filter((asset) => asset.id !== selectedAssetId)
         );
         setSelectedAssetId(null);
@@ -545,6 +872,34 @@ const pickAudio = async () => {
     title="Audio"
     info="Add one audio file or voice note for this scene. Replacing audio keeps the scene simple for play mode and export."
   />
+
+  <View style={styles.autoplaySettingRow}>
+    <View style={styles.autoplaySettingText}>
+      <Text style={styles.autoplaySettingTitle}>
+        Autoplay voice notes throughout this story
+      </Text>
+      <Text style={styles.autoplaySettingStatus}>
+        {autoplayVoiceNotes ? 'On in Play mode' : 'Off by default'}
+      </Text>
+    </View>
+    <Pressable
+      style={[
+        styles.autoplaySettingButton,
+        autoplayVoiceNotes && styles.autoplaySettingButtonActive,
+      ]}
+      onPress={toggleAutoplayVoiceNotes}
+      accessibilityRole="switch"
+      accessibilityState={{ checked: autoplayVoiceNotes }}
+      accessibilityLabel="Autoplay voice notes throughout this story"
+    >
+      <Text style={[
+        styles.autoplaySettingButtonText,
+        autoplayVoiceNotes && styles.autoplaySettingButtonTextActive,
+      ]}>
+        {autoplayVoiceNotes ? 'On' : 'Off'}
+      </Text>
+    </Pressable>
+  </View>
 
   <Pressable style={styles.buttonSecondary} onPress={pickAudio}>
     <Text style={styles.buttonSecondaryText}>{audioAsset ? 'Replace audio file' : 'Choose audio file'}</Text>
@@ -593,7 +948,7 @@ const pickAudio = async () => {
         onPress={() => {
           stopPreviewAudio();
 
-          setAssets((currentAssets) =>
+          updateAssets((currentAssets) =>
             currentAssets.filter((asset) => asset.type !== 'audio')
           );
         }}
@@ -607,22 +962,12 @@ const pickAudio = async () => {
 )}
 </View>
 
-      <Pressable style={styles.button} onPress={saveMedia}>
-        <Text style={styles.buttonText}>Save media</Text>
-      </Pressable>
+      <View style={styles.autoSaveStatusBox}>
+        <Text style={styles.autoSaveStatusText}>Media saves automatically</Text>
+      </View>
 
-      <Pressable
-        style={styles.buttonSecondary}
-        onPress={() =>
-          router.replace({
-            pathname: '/scene-editor',
-            params: {
-              sceneId: scene.id,
-            },
-          })
-        }
-      >
-        <Text style={styles.buttonSecondaryText}>Cancel</Text>
+      <Pressable style={styles.buttonSecondary} onPress={returnToSceneEditor}>
+        <Text style={styles.buttonSecondaryText}>Back to scene</Text>
       </Pressable>
     </ScrollView>
   );
@@ -634,6 +979,54 @@ const styles = StyleSheet.create({
     paddingTop: 52,
     paddingBottom: 80,
     backgroundColor: '#F7F1E1',
+  },
+  autoplaySettingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderWidth: 1,
+    borderColor: '#C9D8B8',
+    borderRadius: 16,
+    padding: 12,
+    marginBottom: 12,
+    backgroundColor: '#F0F7E8',
+  },
+  autoplaySettingText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  autoplaySettingTitle: {
+    color: '#2A251D',
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '900',
+  },
+  autoplaySettingStatus: {
+    color: '#6F675A',
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 3,
+  },
+  autoplaySettingButton: {
+    minWidth: 54,
+    borderWidth: 1,
+    borderColor: '#6E9358',
+    borderRadius: 999,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    backgroundColor: '#FFFDF7',
+  },
+  autoplaySettingButtonActive: {
+    backgroundColor: '#247322',
+    borderColor: '#247322',
+  },
+  autoplaySettingButtonText: {
+    color: '#247322',
+    fontWeight: '900',
+  },
+  autoplaySettingButtonTextActive: {
+    color: '#FFFFFF',
   },
   backButton: {
     alignSelf: 'flex-start',
@@ -722,6 +1115,118 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     color: '#4F6F52',
   },
+  librarySummaryText: {
+    color: '#665D4E',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
+    marginTop: 3,
+  },
+
+  libraryToggleButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: '#E9F2DD',
+    borderWidth: 1,
+    borderColor: '#C9DEBA',
+  },
+
+  libraryToggleButtonText: {
+    color: '#247322',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+
+  libraryGroupTitle: {
+    color: '#2A251D',
+    fontSize: 14,
+    fontWeight: '900',
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  audioLibraryStack: {
+    gap: 8,
+  },
+  audioLibraryCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderWidth: 1,
+    borderColor: '#D8CCAA',
+    borderRadius: 18,
+    padding: 10,
+    backgroundColor: '#FFFDF7',
+  },
+  audioLibraryIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    backgroundColor: '#E9F2DD',
+    borderWidth: 1,
+    borderColor: '#6E9358',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  audioLibraryIconText: {
+    color: '#247322',
+    fontSize: 20,
+    fontWeight: '900',
+  },
+  audioLibraryName: {
+    color: '#2A251D',
+    fontSize: 13,
+    fontWeight: '900',
+    marginBottom: 2,
+  },
+  libraryRow: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingBottom: 6,
+  },
+  libraryCard: {
+    width: 138,
+    borderWidth: 1,
+    borderColor: '#D8CCAA',
+    borderRadius: 18,
+    padding: 10,
+    backgroundColor: '#FFFDF7',
+  },
+  libraryThumbnail: {
+    width: '100%',
+    height: 84,
+    borderRadius: 12,
+    backgroundColor: '#F5EFD9',
+    marginBottom: 8,
+  },
+  libraryAssetType: {
+    color: '#247322',
+    fontWeight: '900',
+    fontSize: 12,
+    marginBottom: 3,
+  },
+  librarySource: {
+    color: '#665D4E',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '700',
+    minHeight: 32,
+    marginBottom: 8,
+  },
+  libraryUseButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+    backgroundColor: '#E9F2DD',
+    borderWidth: 1,
+    borderColor: '#6E9358',
+    alignItems: 'center',
+  },
+  libraryUseButtonText: {
+    color: '#247322',
+    fontWeight: '900',
+    fontSize: 12,
+  },
   canvasHint: {
     color: '#665D4E',
     fontSize: 13,
@@ -770,6 +1275,23 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '900',
   },
+
+  autoSaveStatusBox: {
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 18,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#D8CCAA',
+    backgroundColor: '#E9F2DD',
+    marginTop: 8,
+    marginBottom: 12,
+  },
+
+  autoSaveStatusText: {
+    color: '#4F6F52',
+    fontWeight: '900',
+  },
   selectedAssetPanel: {
     borderWidth: 1,
     borderColor: '#D8CCAA',
@@ -805,10 +1327,19 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFCF2',
     alignItems: 'center',
   },
+  sizeButtonSelected: {
+    backgroundColor: '#2D6B2F',
+    borderColor: '#2D6B2F',
+  },
+
   sizeButtonText: {
     fontSize: 13,
     fontWeight: '900',
     color: '#247322',
+  },
+
+  sizeButtonTextSelected: {
+    color: '#FFFFFF',
   },
   selectedAssetSubtitle: {
     fontSize: 13,
