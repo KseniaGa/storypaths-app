@@ -35,7 +35,12 @@ import {
   getPlayTheme,
   getStoryPlayAppearance,
 } from "../utils/playAppearance";
-import { downloadTextFileOnWeb } from "../utils/platformFiles";
+import {
+  downloadDataUrlOnWeb,
+  downloadTextFileOnWeb,
+  getPersistentMediaUri,
+  readUriAsDataUrl,
+} from "../utils/platformFiles";
 
 const STORY_ICON_PRESETS = [
   "🪲",
@@ -538,25 +543,27 @@ export default function StoryScreen() {
         await asset.downloadAsync();
 
         const localUri = asset.localUri || asset.uri;
-        const base64 = await FileSystem.readAsStringAsync(localUri, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
+        const dataUrl = await readUriAsDataUrl(
+          localUri,
+          getMimeTypeFromUri(localUri, "audio"),
+        );
 
         return {
           ...music,
           name: builtInTrack.title,
-          uri: `data:audio/mpeg;base64,${base64}`,
+          uri: dataUrl,
         };
       }
 
       if (music.uri) {
-        const base64 = await FileSystem.readAsStringAsync(music.uri, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
+        const dataUrl = await readUriAsDataUrl(
+          music.uri,
+          getMimeTypeFromUri(music.uri, "audio"),
+        );
 
         return {
           ...music,
-          uri: `data:${getMimeTypeFromUri(music.uri, "audio")};base64,${base64}`,
+          uri: dataUrl,
         };
       }
     } catch (error) {
@@ -584,15 +591,12 @@ export default function StoryScreen() {
             if (asset.type !== "image" && asset.type !== "audio") return asset;
 
             try {
-              const base64 = await FileSystem.readAsStringAsync(asset.uri, {
-                encoding: FileSystem.EncodingType.Base64,
-              });
-
               const mimeType = getMimeTypeFromUri(asset.uri, asset.type);
+              const dataUrl = await readUriAsDataUrl(asset.uri, mimeType);
 
               return {
                 ...asset,
-                uri: `data:${mimeType};base64,${base64}`,
+                uri: dataUrl,
               };
             } catch (error) {
               console.error("Could not embed asset:", asset.uri, error);
@@ -1522,19 +1526,24 @@ function toggleAudio() {
       }
 
       const pickedFile = result.assets[0];
-
-      const safeName =
-        pickedFile.name?.replace(/[^a-z0-9._-]/gi, "_") ||
-        `background-music-${Date.now()}.mp3`;
-
-      const destinationUri =
-        FileSystem.documentDirectory +
-        `background-music-${Date.now()}-${safeName}`;
-
-      await FileSystem.copyAsync({
-        from: pickedFile.uri,
-        to: destinationUri,
-      });
+      let destinationUri: string;
+      if (Platform.OS === "web") {
+        destinationUri = await getPersistentMediaUri(
+          pickedFile,
+          pickedFile.mimeType || "audio/mpeg",
+        );
+      } else {
+        const safeName =
+          pickedFile.name?.replace(/[^a-z0-9._-]/gi, "_") ||
+          `background-music-${Date.now()}.mp3`;
+        destinationUri =
+          FileSystem.documentDirectory +
+          `background-music-${Date.now()}-${safeName}`;
+        await FileSystem.copyAsync({
+          from: pickedFile.uri,
+          to: destinationUri,
+        });
+      }
 
       setBackgroundMusic({
         type: "uploaded",
@@ -2124,19 +2133,42 @@ function toggleAudio() {
         requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
       });
 
-      const uri = await captureRef(storyTreeImageRef.current, {
-        format: "png",
-        quality: 1,
-        result: "tmpfile",
-        width: Math.ceil(
-          fullScreenStoryTreeWidth + STORY_TREE_EXPORT_PADDING * 2,
-        ),
-        height: Math.ceil(
-          fullScreenStoryTreeHeight + STORY_TREE_EXPORT_PADDING * 2,
-        ),
-      });
+      let uri: string;
+
+      if (Platform.OS === "web") {
+        const { default: html2canvas } = await import("html2canvas");
+        const canvas = await html2canvas(
+          storyTreeImageRef.current as unknown as HTMLElement,
+          {
+            backgroundColor: "#FBF7EA",
+            scale: 1,
+            useCORS: true,
+          },
+        );
+        uri = canvas.toDataURL("image/png", 1);
+      } else {
+        uri = await captureRef(storyTreeImageRef.current, {
+          format: "png",
+          quality: 1,
+          result: "tmpfile",
+          width: Math.ceil(
+            fullScreenStoryTreeWidth + STORY_TREE_EXPORT_PADDING * 2,
+          ),
+          height: Math.ceil(
+            fullScreenStoryTreeHeight + STORY_TREE_EXPORT_PADDING * 2,
+          ),
+        });
+      }
 
       setStoryTreeZoom(previousScale);
+
+      if (Platform.OS === "web") {
+        const fileName = `${title.replace(/[^a-z0-9]/gi, "_").toLowerCase() || "story"}_tree.png`;
+        if (!downloadDataUrlOnWeb(uri, fileName)) {
+          throw new Error("The browser could not download the Story Tree image.");
+        }
+        return;
+      }
 
       const canShare = await Sharing.isAvailableAsync();
 

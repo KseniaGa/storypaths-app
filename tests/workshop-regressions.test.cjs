@@ -30,7 +30,7 @@ const loadTypeScriptModule = (relativePath, mocks = {}) => {
 
 test('Drawing Pad tool changes do not reconfigure the canvas', () => {
   const source = read('app/draw.tsx');
-  const canvas = source.match(/<SignatureScreen[\s\S]*?\/>/)?.[0] || '';
+  const canvas = source.match(/<DrawingCanvas\s[\s\S]*?\/>/)?.[0] || '';
 
   assert.match(canvas, /penColor="#111111"/);
   assert.match(canvas, /minWidth=\{3\}/);
@@ -46,6 +46,13 @@ test('Drawing Pad tool changes do not reconfigure the canvas', () => {
   assert.match(controls, /changePenColor/);
   assert.match(controls, /changePenSize/);
   assert.doesNotMatch(controls, /clearSignature|setDataURL/);
+
+  const webCanvas = read('components/drawing-canvas.web.tsx');
+  assert.match(webCanvas, /<canvas/);
+  assert.match(webCanvas, /onPointerDown=\{startStroke\}/);
+  assert.match(webCanvas, /canvas\.toDataURL\("image\/png"\)/);
+  assert.match(source, /Platform\.OS !== "web"/);
+  assert.match(source, /drawingUri = signature/);
 });
 
 test('Creating a scene from a choice links it in the same store update', () => {
@@ -133,6 +140,17 @@ test('Creating a new destination can replace a choice link without deleting the 
   assert.match(createOption, /Create a new scene and change this choice\\u2019s destination\?/);
   assert.match(createOption, /createSceneFromChoice\([\s\S]*?true,/);
   assert.match(createOption, /\+ Create new scene/);
+  assert.match(createOption, /confirmAction\(/);
+});
+
+test('web scene actions use browser confirmation and omit the duplicate native header', () => {
+  const editor = read('app/scene-editor.tsx');
+  const dialogs = read('utils/platformDialogs.ts');
+
+  assert.match(dialogs, /Platform\.OS === "web"/);
+  assert.match(dialogs, /window\.confirm/);
+  assert.match(editor, /headerShown: Platform\.OS !== "web"/);
+  assert.match(editor, /confirmAction\([\s\S]*?Create new scene/);
 });
 
 test('Export catches build errors and supports native and web delivery', () => {
@@ -287,6 +305,21 @@ test('web text exports create and clean up a browser download link', () => {
     global.Blob = originalBlob;
     global.setTimeout = originalSetTimeout;
   }
+});
+
+test('web media exports use browser data URLs and Story Tree downloads', () => {
+  const source = read('app/story.tsx');
+  const platformFiles = read('utils/platformFiles.ts');
+
+  assert.match(platformFiles, /export const readUriAsDataUrl/);
+  assert.match(platformFiles, /response\.blob\(\)/);
+  assert.match(platformFiles, /export const getPersistentMediaUri/);
+  assert.match(platformFiles, /export const downloadDataUrlOnWeb/);
+  assert.match(source, /readUriAsDataUrl\(asset\.uri, mimeType\)/);
+  assert.match(source, /await import\("html2canvas"\)/);
+  assert.match(source, /canvas\.toDataURL\("image\/png", 1\)/);
+  assert.match(source, /result: "tmpfile"/);
+  assert.match(source, /downloadDataUrlOnWeb\(uri, fileName\)/);
 });
 
 test('HTML export skips inaccessible media instead of aborting the story', () => {

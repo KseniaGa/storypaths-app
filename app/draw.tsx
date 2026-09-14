@@ -7,15 +7,17 @@ import {
   Text,
   useWindowDimensions,
   View,
+  Platform,
 } from "react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
-import SignatureScreen, {
-  type SignatureViewRef,
-} from "react-native-signature-canvas";
+import DrawingCanvas, {
+  type DrawingCanvasRef,
+} from "../components/drawing-canvas";
 import * as FileSystem from "expo-file-system/legacy";
 import { useStoryStore } from "../store/storyStore";
+import { confirmAction } from "../utils/platformDialogs";
 
 const CANVAS_BACKGROUND = "#FBF8EE";
 const ERASER_MIN_WIDTH = 16;
@@ -46,7 +48,7 @@ type BrushSizeName = (typeof BRUSH_SIZES)[number]["name"];
 type CapturePurpose = "history" | "clear" | "save";
 
 export default function DrawScreen() {
-  const signatureRef = useRef<SignatureViewRef | null>(null);
+  const signatureRef = useRef<DrawingCanvasRef | null>(null);
   const isSavingDrawing = useRef(false);
   const saveReturnTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const captureQueue = useRef<CapturePurpose[]>([]);
@@ -121,6 +123,11 @@ export default function DrawScreen() {
 
       try {
         setIsLoadingDrawing(true);
+        if (drawingAsset.uri.startsWith("data:")) {
+          setInitialDrawingDataUrl(drawingAsset.uri);
+          initialiseHistory(drawingAsset.uri);
+          return;
+        }
         const base64 = await FileSystem.readAsStringAsync(drawingAsset.uri, {
           encoding: FileSystem.EncodingType.Base64,
         });
@@ -178,13 +185,12 @@ export default function DrawScreen() {
       return;
     }
 
-    Alert.alert(
+    confirmAction(
       "Discard unsaved drawing?",
       "Your latest drawing changes have not been saved.",
-      [
-        { text: "Stay", style: "cancel" },
-        { text: "Discard", style: "destructive", onPress: returnToMedia },
-      ],
+      "Discard",
+      returnToMedia,
+      true,
     );
   }, [isDirty, returnToMedia]);
 
@@ -235,12 +241,15 @@ export default function DrawScreen() {
     if (!scene || !isSavingDrawing.current) return;
 
     try {
-      const base64 = signature.replace("data:image/png;base64,", "");
       const timestamp = Date.now();
-      const drawingUri = `${FileSystem.documentDirectory}drawing-${timestamp}.png`;
-      await FileSystem.writeAsStringAsync(drawingUri, base64, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
+      let drawingUri = signature;
+      if (Platform.OS !== "web") {
+        const base64 = signature.replace("data:image/png;base64,", "");
+        drawingUri = `${FileSystem.documentDirectory}drawing-${timestamp}.png`;
+        await FileSystem.writeAsStringAsync(drawingUri, base64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+      }
 
       const isEditingExistingDrawing = !!drawingAsset;
       const attachmentId = isEditingExistingDrawing
@@ -390,17 +399,16 @@ export default function DrawScreen() {
   };
 
   const requestClear = () => {
-    Alert.alert("Clear the whole drawing?", "You can undo this during this session.", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Clear",
-        style: "destructive",
-        onPress: () => {
-          captureQueue.current.push("clear");
-          signatureRef.current?.readSignature();
-        },
+    confirmAction(
+      "Clear the whole drawing?",
+      "You can undo this during this session.",
+      "Clear",
+      () => {
+        captureQueue.current.push("clear");
+        signatureRef.current?.readSignature();
       },
-    ]);
+      true,
+    );
   };
 
   const requestSave = () => {
@@ -605,7 +613,7 @@ export default function DrawScreen() {
           isCompactPhone && styles.canvasWrapperCompact,
         ]}
       >
-        <SignatureScreen
+        <DrawingCanvas
           ref={signatureRef}
           dataURL={initialDrawingDataUrl || undefined}
           penColor="#111111"
@@ -624,25 +632,6 @@ export default function DrawScreen() {
             console.error(error);
             Alert.alert("Drawing problem", "The drawing canvas could not be loaded.");
           }}
-          descriptionText="Draw a symbol, memory, map, or feeling"
-          clearText="Clear"
-          confirmText="Save drawing"
-          androidLayerType="hardware"
-          webStyle={`
-            .m-signature-pad {
-              box-shadow: none;
-              border: none;
-            }
-            .m-signature-pad--body {
-              border: none;
-            }
-            .m-signature-pad--footer {
-              display: none;
-            }
-            body, html {
-              background-color: ${CANVAS_BACKGROUND};
-            }
-          `}
         />
       </View>
 

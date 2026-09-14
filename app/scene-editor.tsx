@@ -39,6 +39,8 @@ import {
   toggleRichTextFormatting,
   updateRichTextFormattingForEdit,
 } from "../utils/richText";
+import { confirmAction } from "../utils/platformDialogs";
+import { getPersistentMediaUri } from "../utils/platformFiles";
 
 const SHOW_WRITING_HINTS = false;
 
@@ -438,13 +440,11 @@ export default function SceneEditorScreen() {
     };
 
     if (destinationScene.id === existingScene?.id) {
-      Alert.alert(
+      confirmAction(
         "Link back to this scene?",
         "This creates a loop. In Play mode, this choice will return to the same scene.",
-        [
-          { text: "Cancel", style: "cancel" },
-          { text: "Create loop", onPress: applyConnection },
-        ],
+        "Create loop",
+        applyConnection,
       );
       return;
     }
@@ -538,17 +538,24 @@ export default function SceneEditorScreen() {
       if (result.canceled || !result.assets?.[0]) return;
 
       const pickedFile = result.assets[0];
-      const safeName =
-        pickedFile.name?.replace(/[^a-z0-9._-]/gi, "_") ||
-        `scene-background-${Date.now()}.mp3`;
-      const destinationUri =
-        FileSystem.documentDirectory +
-        `scene-background-${Date.now()}-${safeName}`;
-
-      await FileSystem.copyAsync({
-        from: pickedFile.uri,
-        to: destinationUri,
-      });
+      let destinationUri: string;
+      if (Platform.OS === "web") {
+        destinationUri = await getPersistentMediaUri(
+          pickedFile,
+          pickedFile.mimeType || "audio/mpeg",
+        );
+      } else {
+        const safeName =
+          pickedFile.name?.replace(/[^a-z0-9._-]/gi, "_") ||
+          `scene-background-${Date.now()}.mp3`;
+        destinationUri =
+          FileSystem.documentDirectory +
+          `scene-background-${Date.now()}-${safeName}`;
+        await FileSystem.copyAsync({
+          from: pickedFile.uri,
+          to: destinationUri,
+        });
+      }
 
       setSceneBackgroundMusic({
         type: "uploaded",
@@ -916,6 +923,7 @@ export default function SceneEditorScreen() {
     <>
       <Stack.Screen
         options={{
+          headerShown: Platform.OS !== "web",
           title:
             sceneId !== undefined && sceneId !== ""
               ? "Edit scene"
@@ -1811,14 +1819,11 @@ export default function SceneEditorScreen() {
                   <Pressable
                     style={styles.createNextSceneButton}
                     onPress={() => {
-                      Alert.alert(
+                      confirmAction(
                         "Change destination?",
                         "Create a new scene and change this choice\u2019s destination?",
-                        [
-                          { text: "Cancel", style: "cancel" },
-                          {
-                            text: "Create new scene",
-                            onPress: () => {
+                        "Create new scene",
+                        () => {
                               const saved = flushSceneBeforeNavigation();
                               if (!saved) return;
                               const newSceneId = createSceneFromChoice(
@@ -1861,9 +1866,7 @@ export default function SceneEditorScreen() {
                                     existingScene.title || "Untitled scene",
                                 },
                               });
-                            },
-                          },
-                        ],
+                        },
                       );
                     }}
                   >

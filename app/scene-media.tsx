@@ -1,4 +1,4 @@
-import { View, Text, StyleSheet, Pressable, ScrollView, Alert, Image } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ScrollView, Alert, Image, Platform } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useState, useEffect, useRef } from 'react';
 import { useStoryStore } from '../store/storyStore';
@@ -23,6 +23,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { getPersistentMediaUri } from '../utils/platformFiles';
 
 function DraggableAsset({
   asset,
@@ -444,6 +445,7 @@ const openDrawingPad = (drawingAssetId?: string) => {
       mediaTypes: ['images'],
       allowsEditing: false,
       quality: 1,
+      base64: Platform.OS === 'web',
     });
 
     if (result.canceled) return;
@@ -452,13 +454,17 @@ const openDrawingPad = (drawingAssetId?: string) => {
 
     if (!selected?.uri) return;
 
+    const persistentUri = await getPersistentMediaUri(
+      selected,
+      selected.mimeType || 'image/jpeg',
+    );
     const attachmentId = `asset-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     updateAssets((currentAssets) => [
       ...currentAssets,
       {
         id: attachmentId,
         type: 'image',
-        uri: selected.uri,
+        uri: persistentUri,
         ...getNextImagePosition(currentAssets),
         width: 220,
         height: 160,
@@ -508,13 +514,20 @@ const stopRecording = async () => {
   const extension =
     recordedUri.split('.').pop()?.split('?')[0] || 'm4a';
 
-  const permanentUri =
-    `${FileSystem.documentDirectory}voice-note-${Date.now()}.${extension}`;
-
-  await FileSystem.copyAsync({
-    from: recordedUri,
-    to: permanentUri,
-  });
+  let permanentUri = recordedUri;
+  if (Platform.OS === 'web') {
+    permanentUri = await getPersistentMediaUri(
+      { uri: recordedUri, mimeType: 'audio/webm' },
+      'audio/webm',
+    );
+  } else {
+    permanentUri =
+      `${FileSystem.documentDirectory}voice-note-${Date.now()}.${extension}`;
+    await FileSystem.copyAsync({
+      from: recordedUri,
+      to: permanentUri,
+    });
+  }
 
   stopPreviewAudio();
 
@@ -552,13 +565,18 @@ const pickAudio = async () => {
 
   stopPreviewAudio();
 
+  const persistentUri = await getPersistentMediaUri(
+    file,
+    file.mimeType || 'audio/mpeg',
+  );
+
   const attachmentId = `audio-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   updateAssets((currentAssets) => [
     ...currentAssets.filter((asset) => asset.type !== 'audio'),
     {
       id: attachmentId,
       type: 'audio',
-      uri: file.uri,
+      uri: persistentUri,
       name: file.name || 'Audio file',
       libraryItemId: attachmentId,
     },
