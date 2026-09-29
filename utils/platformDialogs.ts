@@ -1,5 +1,13 @@
 import { Alert, Platform } from "react-native";
 
+export const showMessage = (title: string, message: string) => {
+  if (Platform.OS === "web" && typeof window !== "undefined") {
+    window.alert(`${title}\n\n${message}`);
+    return;
+  }
+  Alert.alert(title, message);
+};
+
 export const confirmAction = (
   title: string,
   message: string,

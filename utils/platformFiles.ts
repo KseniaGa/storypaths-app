@@ -9,6 +9,8 @@ type PickedTextFile = Pick<
 
 type PickedMediaFile = {
   uri: string;
+  name?: string | null;
+  fileName?: string | null;
   file?: Blob | null;
   base64?: string | null;
   mimeType?: string | null;
@@ -76,8 +78,28 @@ export const getPersistentMediaUri = async (
   asset: PickedMediaFile,
   fallbackMimeType: string,
 ): Promise<string> => {
-  if (Platform.OS !== "web") return asset.uri;
   if (asset.uri.startsWith("data:")) return asset.uri;
+
+  if (Platform.OS !== "web") {
+    const root = FileSystem.documentDirectory;
+    if (!root) throw new Error("Permanent app storage is unavailable.");
+    if (asset.uri.startsWith(root)) return asset.uri;
+    const directory = `${root}story-media/`;
+    const sourceName = asset.fileName || asset.name || asset.uri.split(/[?#]/)[0];
+    const extension = sourceName.match(/\.(png|jpe?g|gif|webp|heic|heif|avif|bmp|mp3|m4a|mp4|aac|wav|ogg|opus|flac|caf|3gp|amr|webm)$/i)?.[1]?.toLowerCase();
+    const mimeExtensions: Record<string, string> = {
+      "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp",
+      "image/gif": "gif", "image/heic": "heic", "image/heif": "heif",
+      "audio/mpeg": "mp3", "audio/mp4": "m4a", "audio/aac": "aac",
+      "audio/wav": "wav", "audio/x-wav": "wav", "audio/ogg": "ogg",
+      "audio/webm": "webm", "audio/flac": "flac", "audio/3gpp": "3gp",
+    };
+    const suffix = extension || mimeExtensions[asset.mimeType || fallbackMimeType] || "bin";
+    const destination = `${directory}media-${Date.now()}-${Math.random().toString(36).slice(2, 11)}.${suffix}`;
+    await FileSystem.makeDirectoryAsync(directory, { intermediates: true });
+    await FileSystem.copyAsync({ from: asset.uri, to: destination });
+    return destination;
+  }
 
   const mimeType = asset.mimeType || fallbackMimeType;
   if (asset.base64) {

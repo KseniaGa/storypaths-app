@@ -21,6 +21,8 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import * as DocumentPicker from "expo-document-picker";
 import { Asset } from "expo-asset";
+import { buildStoryBackup } from "../utils/storyBackup";
+import { showMessage } from "../utils/platformDialogs";
 import {
   clearScrollPosition,
   getScrollPosition,
@@ -174,6 +176,8 @@ function StoryVisibilityToggle({
 }
 
 export default function StoryScreen() {
+  const backupInProgress = useRef(false);
+  const [isPreparingBackup, setIsPreparingBackup] = useState(false);
   const { restoreScroll, openTree, returnSceneId } = useLocalSearchParams();
   const currentStory = useStoryStore((state) => state.getCurrentStory());
   const setStoryIcon = useStoryStore((state: any) => state.setStoryIcon);
@@ -256,6 +260,9 @@ export default function StoryScreen() {
   };
 
   const shareJson = async () => {
+    if (backupInProgress.current) return;
+    backupInProgress.current = true;
+    setIsPreparingBackup(true);
     try {
       const json = exportCurrentStory();
       if (!json) throw new Error("No current story is open.");
@@ -265,21 +272,32 @@ export default function StoryScreen() {
         throw new Error("The story backup is incomplete.");
       }
 
+      const portableJson = await buildStoryBackup(parsed, async (id) => {
+        const track = getBuiltInBackgroundMusic(id);
+        if (!track) throw new Error("Unknown built-in music");
+        const asset = Asset.fromModule(track.asset);
+        await asset.downloadAsync();
+        return asset.localUri || asset.uri;
+      });
+
       const fileName = `${title.replace(/[^a-z0-9]/gi, "_").toLowerCase() || "story"}.json`;
       await saveOrShareExport(
-        json,
+        portableJson,
         fileName,
         "application/json",
         "Share story backup",
       );
     } catch (error) {
       console.error("JSON share error:", error);
-      Alert.alert(
+      showMessage(
         "JSON export failed",
         error instanceof Error
           ? error.message
           : "Could not create or share the JSON file.",
       );
+    } finally {
+      backupInProgress.current = false;
+      setIsPreparingBackup(false);
     }
   };
 
@@ -344,10 +362,6 @@ export default function StoryScreen() {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [draftStoryTitle, setDraftStoryTitle] = useState(title);
 
-  useEffect(() => {
-    setDraftStoryTitle(title);
-  }, [title]);
-
   const saveStoryTitle = () => {
     if (!currentStory) return;
 
@@ -399,7 +413,7 @@ export default function StoryScreen() {
   const [isTracesExpanded, setIsTracesExpanded] = useState(false);
   const [isStoryTreeExpanded, setIsStoryTreeExpanded] = useState(false);
   const [isPlaySettingsExpanded, setIsPlaySettingsExpanded] = useState(false);
-  const [isStoryTreeFullScreenOpen, setIsStoryTreeFullScreenOpen] = useState(false);
+  const [isStoryTreeFullScreenOpen, setIsStoryTreeFullScreenOpen] = useState(openTree === "true");
   const [playSettingsCardY, setPlaySettingsCardY] = useState(0);
 
   const storyScrollKey = currentStory?.id
@@ -417,9 +431,11 @@ export default function StoryScreen() {
     }
   }, [openTree, restoreScroll, storyScrollKey]);
 
-  useEffect(() => {
+  const [previousOpenTree, setPreviousOpenTree] = useState(openTree);
+  if (previousOpenTree !== openTree) {
+    setPreviousOpenTree(openTree);
     if (openTree === "true") setIsStoryTreeFullScreenOpen(true);
-  }, [openTree]);
+  }
 
   useEffect(() => {
     const backHandler = BackHandler.addEventListener(
@@ -855,7 +871,7 @@ export default function StoryScreen() {
   <div class="container">
     <div class="card">
       <div class="topbar">
-        <div class="story-title">${portableStory.title} · ${portableStory.mode}</div>
+        <div class="story-title">${portableStory.title}</div>
         <div class="topbar-actions">
           <button id="background-button" class="restart" onclick="toggleBackgroundMusic()" style="display:none;">🎵 Music</button>
           <button class="restart" onclick="restartStory()">Restart</button>
@@ -1970,7 +1986,7 @@ function toggleAudio() {
       Math.max(STORY_TREE_MIN_ZOOM, nextScale),
     );
 
-    storyTreeScale.value = clampedScale;
+    storyTreeScale.set(clampedScale);
     setStoryTreeZoomPercent(Math.round(clampedScale * 100));
   };
 
@@ -2280,6 +2296,12 @@ function toggleAudio() {
           <Text style={styles.homePillText}>← Home</Text>
         </Pressable>
 
+        {isPreparingBackup && (
+          <Text accessibilityLiveRegion="polite" style={styles.sceneMenuMeta}>
+            Preparing backup with pictures and audio…
+          </Text>
+        )}
+
         {isEditingTitle ? (
           <View style={styles.storyTitleEditCard}>
             <TextInput
@@ -2330,7 +2352,10 @@ function toggleAudio() {
                   </Text>
                   <Pressable
                     style={styles.renameStoryIconButton}
-                    onPress={() => setIsEditingTitle(true)}
+                    onPress={() => {
+                      setDraftStoryTitle(title);
+                      setIsEditingTitle(true);
+                    }}
                     accessibilityRole="button"
                     accessibilityLabel="Rename story"
                   >

@@ -12,14 +12,15 @@ import {
   Modal,
 } from "react-native";
 import { useLocalSearchParams, router, Stack } from "expo-router";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef } from "react";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
-import { useStoryStore } from "../store/storyStore";
+import { storyPersistence, useStoryStore } from "../store/storyStore";
 import type {
   BackgroundMusic,
   RichTextFormat,
   ScenePlaySettingsOverride,
+  SceneAsset,
 } from "../types/story";
 import {
   clearScrollPosition,
@@ -41,8 +42,12 @@ import {
 } from "../utils/richText";
 import { confirmAction } from "../utils/platformDialogs";
 import { getPersistentMediaUri } from "../utils/platformFiles";
+import { usePersistenceStatus } from "../hooks/use-persistence-status";
+import { useInterruptionProtection } from "../hooks/use-interruption-protection";
+import { createLocalId } from "../utils/localIds";
 
 const SHOW_WRITING_HINTS = false;
+const EMPTY_ASSETS: SceneAsset[] = [];
 
 const SCENE_BACKGROUND_MUSIC = [
   {
@@ -72,9 +77,11 @@ function SignedAmountInput({
 }) {
   const [text, setText] = useState(String(value));
 
-  useEffect(() => {
+  const [previousValue, setPreviousValue] = useState(value);
+  if (value !== previousValue) {
+    setPreviousValue(value);
     setText(String(value));
-  }, [value]);
+  }
 
   return (
     <TextInput
@@ -95,6 +102,15 @@ function SignedAmountInput({
 }
 
 export default function SceneEditorScreen() {
+  const { sceneId } = useLocalSearchParams();
+  const story = useStoryStore((state) => state.getCurrentStory());
+  const availableSceneId = story?.scenes.find((scene) => scene.id === sceneId)?.id;
+  // A different scene gets a fresh draft; saving this scene must not reset its inputs.
+  return <SceneEditorDraft key={JSON.stringify([story?.id, sceneId, availableSceneId])} />;
+}
+
+function SceneEditorDraft() {
+  const persistenceStatus = usePersistenceStatus();
   const {
     sceneId,
     parentSceneId,
@@ -119,8 +135,7 @@ export default function SceneEditorScreen() {
       ? createdFromScene.trim()
       : undefined;
 
-  const createChoiceId = () =>
-    `choice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const createChoiceId = () => createLocalId("choice");
 
   const createDialogueTurnId = () =>
     `dialogue-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -140,7 +155,7 @@ export default function SceneEditorScreen() {
   };
 
   const currentStory = useStoryStore((state) => state.getCurrentStory());
-  const scenes = currentStory?.scenes || [];
+  const scenes = useMemo(() => currentStory?.scenes || [], [currentStory?.scenes]);
   const storyTitle = currentStory?.title || "Untitled story";
 
   const addScene = useStoryStore((state) => state.addScene);
@@ -158,6 +173,8 @@ export default function SceneEditorScreen() {
   const autoSaveGeneration = useRef(0);
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const safeBackNavigation = useRef<() => void>(() => {});
+  const draftIdentity = useRef<{ key: string; id?: string }>({ key: "" });
+  const draftKey = JSON.stringify([currentStory?.id, requestedSceneId]);
   const connectionConfirmationTimer =
     useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -257,17 +274,18 @@ export default function SceneEditorScreen() {
     return `Scene ${sceneNumber} · ${cleanTitle || "Untitled"}`;
   };
 
-  const [sceneTitle, setSceneTitle] = useState("");
-  const [sceneText, setSceneText] = useState("");
+  const initialDocument = getRichTextDocument(existingScene?.text || "", existingScene?.textFormatting);
+  const [sceneTitle, setSceneTitle] = useState(existingScene?.title || "");
+  const [sceneText, setSceneText] = useState(initialDocument.text);
   const [sceneTextFormatting, setSceneTextFormatting] = useState<
     RichTextFormat[]
-  >([]);
+  >(initialDocument.formatting);
   const [sceneTextSelection, setSceneTextSelection] = useState({
     start: 0,
     end: 0,
   });
-  const [sceneType, setSceneType] = useState<"story" | "dialogue">("story");
-  const [dialogueTurns, setDialogueTurns] = useState<any[]>([]);
+  const [sceneType, setSceneType] = useState<"story" | "dialogue">(existingScene?.sceneType === "dialogue" ? "dialogue" : "story");
+  const [dialogueTurns, setDialogueTurns] = useState<any[]>(existingScene?.dialogueTurns || []);
 
   const [choices, setChoices] = useState(existingScene?.choices || []);
   const choicesRef = useRef(existingScene?.choices || []);
@@ -275,7 +293,7 @@ export default function SceneEditorScreen() {
   const [newChoice, setNewChoice] = useState("");
   const [isAddingChoice, setIsAddingChoice] = useState(false);
 
-  const [assets, setAssets] = useState(existingScene?.assets || []);
+  const assets = existingScene?.assets || EMPTY_ASSETS;
   const [scenePlaySettingsOverride, setScenePlaySettingsOverride] =
     useState<ScenePlaySettingsOverride | undefined>(
       existingScene?.playSettingsOverride,
@@ -283,45 +301,6 @@ export default function SceneEditorScreen() {
   const isOpeningScene = existingScene
     ? scenes[0]?.id === existingScene.id
     : scenes.length === 0;
-
-  useEffect(() => {
-    if (sceneId !== undefined && sceneId !== "") {
-      setSceneTitle(existingScene?.title || "");
-      const richTextDocument = getRichTextDocument(
-        existingScene?.text || "",
-        existingScene?.textFormatting,
-      );
-      setSceneText(richTextDocument.text);
-      setSceneTextFormatting(richTextDocument.formatting);
-      setSceneTextSelection({ start: 0, end: 0 });
-      setSceneType(existingScene?.sceneType === "dialogue" ? "dialogue" : "story");
-      setDialogueTurns(existingScene?.dialogueTurns || []);
-      const nextChoices = existingScene?.choices || [];
-      choicesRef.current = nextChoices;
-      setChoices(nextChoices);
-      setAssets(existingScene?.assets || []);
-      setScenePlaySettingsOverride(existingScene?.playSettingsOverride);
-    } else {
-      setSceneTitle("");
-      setSceneText("");
-      setSceneTextFormatting([]);
-      setSceneTextSelection({ start: 0, end: 0 });
-      setSceneType("story");
-      setDialogueTurns([]);
-      choicesRef.current = [];
-      setChoices([]);
-      setAssets([]);
-      setScenePlaySettingsOverride(undefined);
-    }
-    setNewChoice("");
-    setIsAddingChoice(false);
-  }, [sceneId, existingScene?.id]);
-
-  useEffect(() => {
-    if (existingScene?.assets) {
-      setAssets(existingScene.assets);
-    }
-  }, [existingScene?.assets]);
 
   const rememberedChoices = scenes.flatMap((scene) =>
     scene.choices
@@ -595,15 +574,20 @@ export default function SceneEditorScreen() {
   ): { sceneId: string; wasNew: boolean } | null => {
     const { showAlerts = true } = options;
     const cleanTitle = getCleanSceneTitle();
-    if (existingScene) {
-      if (!scenes.some((scene) => scene.id === existingScene.id)) {
+    const latestStory = useStoryStore.getState().getCurrentStory();
+    if (!latestStory || latestStory.id !== currentStory?.id) return null;
+    if (draftIdentity.current.key !== draftKey) draftIdentity.current = { key: draftKey };
+    const savedId = requestedSceneId || draftIdentity.current.id;
+    const savedScene = latestStory.scenes.find((scene) => scene.id === savedId);
+    if (savedId) {
+      if (!savedScene) {
         if (showAlerts) {
           Alert.alert("Could not save scene", "This scene could not be found.");
         }
         return null;
       }
 
-      updateScene(existingScene.id, {
+      updateScene(savedId, {
         title: cleanTitle,
         text: sceneText || "",
         textFormatting: sceneTextFormatting,
@@ -612,10 +596,10 @@ export default function SceneEditorScreen() {
         choices: choicesRef.current,
         assets,
         playSettingsOverride: scenePlaySettingsOverride,
-        isDone: existingScene.isDone,
+        isDone: savedScene.isDone,
       });
 
-      return { sceneId: existingScene.id, wasNew: false };
+      return { sceneId: savedId, wasNew: !requestedSceneId };
     }
 
     const newSceneId = addScene({
@@ -629,6 +613,7 @@ export default function SceneEditorScreen() {
       assets,
       playSettingsOverride: scenePlaySettingsOverride,
     });
+    draftIdentity.current.id = newSceneId;
 
     if (requestedParentSceneId && parentChoiceIndex >= 0) {
       updateScene(requestedParentSceneId, (latestParentScene) => ({
@@ -739,11 +724,35 @@ export default function SceneEditorScreen() {
     assets.length > 0 ||
     scenePlaySettingsOverride !== undefined;
 
+  useInterruptionProtection(() => {
+    if (hasUnsavedChanges && (existingScene || sceneHasContent)) {
+      autoSaveGeneration.current += 1;
+      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+      const saved = saveCurrentScene({ showAlerts: false });
+      if (!saved) return false;
+      if (saved.wasNew) {
+        router.replace({
+          pathname: "/scene-editor",
+          params: {
+            sceneId: saved.sceneId,
+            returnSceneId: typeof parentSceneId === "string" ? parentSceneId : undefined,
+            createdFromChoice: createdFromChoiceLabel,
+            createdFromScene: createdFromSceneTitle,
+          },
+        });
+      }
+    } else if (storyPersistence.getStatus() === "error") {
+      void storyPersistence.retry();
+    }
+    return storyPersistence.getStatus() !== "error" && storyPersistence.getStatus() !== "saving";
+  });
+
+  const saveAutosaveSnapshot = useEffectEvent(() => saveCurrentScene({ showAlerts: false }));
+
   useEffect(() => {
     if (!hasUnsavedChanges) return;
 
     if (!existingScene && !sceneHasContent) {
-      setSaveStatus("idle");
       return;
     }
 
@@ -757,7 +766,7 @@ export default function SceneEditorScreen() {
       if (saveGeneration !== autoSaveGeneration.current) return;
 
       setSaveStatus("saving");
-      const saved = saveCurrentScene({ showAlerts: false });
+      const saved = saveAutosaveSnapshot();
 
       if (!saved) {
         setSaveStatus("error");
@@ -795,6 +804,8 @@ export default function SceneEditorScreen() {
       }
     };
   }, [
+    existingScene,
+    parentSceneId,
     hasUnsavedChanges,
     sceneHasContent,
     sceneTitle,
@@ -905,7 +916,9 @@ export default function SceneEditorScreen() {
     router.dismissTo("/story");
   };
 
-  safeBackNavigation.current = goBackSafely;
+  useLayoutEffect(() => {
+    safeBackNavigation.current = goBackSafely;
+  });
 
   useEffect(() => {
     const backHandler = BackHandler.addEventListener(
@@ -918,6 +931,28 @@ export default function SceneEditorScreen() {
 
     return () => backHandler.remove();
   }, []);
+
+  const displaySaveStatus =
+    saveStatus === "error" || persistenceStatus === "error"
+      ? "error"
+      : hasUnsavedChanges || persistenceStatus === "saving"
+        ? "saving"
+        : persistenceStatus === "saved"
+          ? "saved"
+          : "idle";
+
+  const choice = activeChoiceLogicIndex !== null ? choices[activeChoiceLogicIndex] : undefined;
+  const modalAvailableConditions = availableRememberedChoices.filter(
+    (rememberedChoice) => rememberedChoice.id !== choice?.id,
+  );
+  const selectedRequiredValue = findStoryValueDefinition(choice?.requiredValue);
+  const valueChanges = getChoiceValueChanges(choice);
+  const visibilityMode = choice?.requiredValue
+    ? "value"
+    : choice?.requiredChoiceId || choice?.requiredTraceLabel?.trim()
+      ? "remembered"
+      : "always";
+
 
   return (
     <>
@@ -2039,25 +2074,25 @@ export default function SceneEditorScreen() {
           <View
             style={[
               styles.autoSaveStatusBox,
-              saveStatus === "error" && styles.autoSaveStatusErrorBox,
+              displaySaveStatus === "error" && styles.autoSaveStatusErrorBox,
             ]}
-            accessibilityRole={saveStatus === "error" ? "alert" : undefined}
+            accessibilityRole={displaySaveStatus === "error" ? "alert" : undefined}
           >
             <Text
               style={[
                 styles.autoSaveStatusText,
-                saveStatus === "error" && styles.autoSaveStatusErrorText,
+                displaySaveStatus === "error" && styles.autoSaveStatusErrorText,
               ]}
             >
-              {saveStatus === "saving"
+              {displaySaveStatus === "saving"
                 ? "Saving..."
-                : saveStatus === "saved"
+                : displaySaveStatus === "saved"
                   ? "Saved automatically"
-                  : saveStatus === "error"
+                  : displaySaveStatus === "error"
                     ? "Could not save changes."
                     : "Changes save automatically"}
             </Text>
-            {saveStatus === "error" && (
+            {displaySaveStatus === "error" && (
               <Pressable
                 style={styles.autoSaveRetryButton}
                 onPress={() => {
@@ -2084,20 +2119,7 @@ export default function SceneEditorScreen() {
           style={styles.logicModalScreen}
           behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
-          {activeChoiceLogicIndex !== null && choices[activeChoiceLogicIndex] ? (() => {
-            const choice = choices[activeChoiceLogicIndex];
-            const modalAvailableConditions = availableRememberedChoices.filter(
-              (rememberedChoice) => rememberedChoice.id !== choice.id,
-            );
-            const selectedRequiredValue = findStoryValueDefinition(choice.requiredValue);
-            const valueChanges = getChoiceValueChanges(choice);
-            const visibilityMode = choice.requiredValue
-              ? "value"
-              : choice.requiredChoiceId || choice.requiredTraceLabel?.trim()
-                ? "remembered"
-                : "always";
-
-            return (
+          {activeChoiceLogicIndex !== null && choice ? (
               <ScrollView
                 contentContainerStyle={styles.logicModalContent}
                 keyboardShouldPersistTaps="handled"
@@ -2646,8 +2668,7 @@ export default function SceneEditorScreen() {
                   </View>
                 </View>
               </ScrollView>
-            );
-          })() : null}
+          ) : null}
         </KeyboardAvoidingView>
       </Modal>
     </>

@@ -2,6 +2,7 @@ import { forwardRef, useImperativeHandle, useRef } from "react";
 import SignatureScreen, {
   type SignatureViewRef,
 } from "react-native-signature-canvas";
+import { NATIVE_DRAWING_COORDINATES } from "../utils/nativeDrawingCoordinates";
 import type {
   DrawingCanvasProps,
   DrawingCanvasRef,
@@ -32,6 +33,11 @@ const DrawingCanvas = forwardRef<DrawingCanvasRef, DrawingCanvasProps>(
         clearText="Clear"
         confirmText="Save drawing"
         androidLayerType="hardware"
+        webviewProps={{
+          injectedJavaScript: NATIVE_DRAWING_COORDINATES,
+          scrollEnabled: false,
+          bounces: false,
+        }}
         webStyle={`
           .m-signature-pad { box-shadow: none; border: none; }
           .m-signature-pad--body { border: none; }

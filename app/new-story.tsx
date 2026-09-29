@@ -1,19 +1,24 @@
-import { View, Text, TextInput, StyleSheet, Pressable, ScrollView, Alert } from 'react-native';
-import { useState } from 'react';
+import { restoreStoryBackup } from '../utils/storyBackup';
+import { showMessage } from '../utils/platformDialogs';
+import { View, Text, TextInput, StyleSheet, Pressable, ScrollView } from 'react-native';
+import { useState, useRef } from 'react';
 import { router } from 'expo-router';
-import { useStoryStore } from '../store/storyStore';
+import { useStoryStore, storyPersistence } from '../store/storyStore';
 import * as DocumentPicker from 'expo-document-picker';
 import { validateStoryImport } from '../utils/storyData';
 import { readPickedTextFile } from '../utils/platformFiles';
 import { STORY_ICON_PRESETS } from '../data/storyContent';
 
 export default function NewStoryScreen() {
+  const importInProgress = useRef(false);
   const [title, setTitle] = useState('');
   const [selectedIcon, setSelectedIcon] = useState(STORY_ICON_PRESETS[0]);
   const createStory = useStoryStore((state) => state.createStory);
   const importStory = useStoryStore((state) => state.importStory);
 
   const handleImportJson = async () => {
+    if (importInProgress.current) return;
+    importInProgress.current = true;
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: 'application/json',
@@ -31,16 +36,23 @@ export default function NewStoryScreen() {
 
       const validation = validateStoryImport(parsed);
       if (!validation.valid) {
-        Alert.alert('Import failed', validation.message);
+        showMessage('Import failed', validation.message);
         return;
       }
 
-      importStory(parsed);
-      Alert.alert('Import successful', `"${parsed.title || "Untitled story"}" was imported.`);
+      const restored = await restoreStoryBackup(parsed);
+      importStory(restored.story);
+      await storyPersistence.retry();
+      if (storyPersistence.getStatus() === 'error') {
+        showMessage('Imported, but not saved', 'The story is open in this session, but could not be saved to this device. Keep the app open and retry saving.');
+      }
+      if (restored.warnings.length) showMessage('Check imported media', restored.warnings.join('\n'));
       router.push('/story');
     } catch (error) {
       console.error('Import error:', error);
-      Alert.alert('Import failed', 'Could not read or import the JSON file.');
+      showMessage('Import failed', error instanceof Error ? error.message : 'Could not read or import the JSON file.');
+    } finally {
+      importInProgress.current = false;
     }
   };
 

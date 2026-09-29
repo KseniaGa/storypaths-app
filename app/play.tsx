@@ -47,7 +47,55 @@ const getBackgroundMusicSource = (music: any) => {
 };
 
 
+const isExpectedAudioReleaseError = (error: unknown) => {
+  const message = String((error as any)?.message || error || '');
+
+  return (
+    message.includes('already released') ||
+    message.includes('cannot be cast to type expo.modules.audio.AudioPlayer')
+  );
+};
+
+const handleAudioPauseError = (error: unknown) => {
+  if (!isExpectedAudioReleaseError(error)) {
+    console.warn('Could not pause audio player:', error);
+  }
+};
+
+const pausePlayerSafely = (audioPlayer: any) => {
+  try {
+    const pauseResult = audioPlayer?.pause?.();
+
+    if (pauseResult && typeof pauseResult.catch === 'function') {
+      pauseResult.catch(handleAudioPauseError);
+    }
+  } catch (error) {
+    handleAudioPauseError(error);
+  }
+};
+
+const playPlayerSafely = (audioPlayer: any, warningLabel: string) => {
+  try {
+    const playResult = audioPlayer?.play?.();
+
+    if (playResult && typeof playResult.catch === 'function') {
+      playResult.catch((error: unknown) => {
+        console.warn(warningLabel, error);
+      });
+    }
+  } catch (error) {
+    console.warn(warningLabel, error);
+  }
+};
+
+
 export default function PlayScreen() {
+  const storyId = useStoryStore((state) => state.currentStoryId);
+  const { startSceneId } = useLocalSearchParams();
+  return <PlaySession key={JSON.stringify([storyId, startSceneId])} />;
+}
+
+function PlaySession() {
   const currentStory = useStoryStore((state) => state.getCurrentStory());
   const title = currentStory?.title || 'Untitled story';
   const scenes = currentStory?.scenes || [];
@@ -64,45 +112,18 @@ const isPreviewMode = preview === 'true';
   const autoplayBackgroundMusic = currentStory?.autoplayBackgroundMusic ?? false;
   const autoplayVoiceNotes = currentStory?.autoplayVoiceNotes ?? false;
 
-  const [currentSceneId, setCurrentSceneId] = useState<string | undefined>(undefined);
+  const initialSceneId = startingSceneId && scenes.some((scene) => scene.id === startingSceneId)
+    ? startingSceneId : scenes[0]?.id;
+  const [currentSceneId, setCurrentSceneId] = useState<string | undefined>(initialSceneId);
 
-  const [visitedSceneIds, setVisitedSceneIds] = useState<string[]>([]);
+  const [visitedSceneIds, setVisitedSceneIds] = useState<string[]>(initialSceneId ? [initialSceneId] : []);
 const [chosenChoiceIds, setChosenChoiceIds] = useState<string[]>([]);
 
 const [activeTraces, setActiveTraces] = useState<string[]>([]);
-const [storyValues, setStoryValues] = useState<Record<string, number>>({});
+const [storyValues, setStoryValues] = useState<Record<string, number>>(() => Object.fromEntries(storyValueDefinitions.map((value) => [value.id, value.initialValue ?? 0])));
 const [choiceFeedback, setChoiceFeedback] = useState<string | null>(null);
 const choiceFeedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 const autoplayedBackgroundMusicKey = useRef<string | null>(null);
-
-useEffect(() => {
-  setChosenChoiceIds([]);
-  setActiveTraces([]);
-  setVisitedSceneIds([]);
-  setStoryValues(createInitialStoryValues());
-  setChoiceFeedback(null);
-
-  if (
-    startingSceneId &&
-    scenes.some((scene) => scene.id === startingSceneId)
-  ) {
-    setCurrentSceneId(startingSceneId);
-    return;
-  }
-
-  setCurrentSceneId(scenes[0]?.id);
-}, [currentStory?.id, startingSceneId]);
-
-
-useEffect(() => {
-  if (!currentSceneId) return;
-
-  setVisitedSceneIds((previousIds) =>
-    previousIds.includes(currentSceneId)
-      ? previousIds
-      : [...previousIds, currentSceneId]
-  );
-}, [currentSceneId]);
 
 const normalizeTrace = (trace: string) =>
   trace.trim().toLowerCase().replace(/\s+/g, '_');
@@ -263,47 +284,6 @@ const backgroundMusicSource = useMemo(
 const backgroundPlayer = useAudioPlayer(backgroundMusicSource);
 const backgroundStatus = useAudioPlayerStatus(backgroundPlayer);
 
-const isExpectedAudioReleaseError = (error: unknown) => {
-  const message = String((error as any)?.message || error || '');
-
-  return (
-    message.includes('already released') ||
-    message.includes('cannot be cast to type expo.modules.audio.AudioPlayer')
-  );
-};
-
-const handleAudioPauseError = (error: unknown) => {
-  if (!isExpectedAudioReleaseError(error)) {
-    console.warn('Could not pause audio player:', error);
-  }
-};
-
-const pausePlayerSafely = (audioPlayer: any) => {
-  try {
-    const pauseResult = audioPlayer?.pause?.();
-
-    if (pauseResult && typeof pauseResult.catch === 'function') {
-      pauseResult.catch(handleAudioPauseError);
-    }
-  } catch (error) {
-    handleAudioPauseError(error);
-  }
-};
-
-const playPlayerSafely = (audioPlayer: any, warningLabel: string) => {
-  try {
-    const playResult = audioPlayer?.play?.();
-
-    if (playResult && typeof playResult.catch === 'function') {
-      playResult.catch((error: unknown) => {
-        console.warn(warningLabel, error);
-      });
-    }
-  } catch (error) {
-    console.warn(warningLabel, error);
-  }
-};
-
 const stopSceneAudio = () => {
   pausePlayerSafely(player);
 };
@@ -395,7 +375,7 @@ useEffect(() => {
   });
 
   return () => backHandler.remove();
-}, [player, backgroundPlayer]);
+});
 
 const restartSceneId =
   isPreviewMode && startingSceneId ? startingSceneId : scenes[0]?.id;
@@ -845,6 +825,7 @@ if (valueChanges.length > 0) {
 
   if (targetScene) {
     stopSceneAudio();
+    setVisitedSceneIds((previous) => previous.includes(targetScene.id) ? previous : [...previous, targetScene.id]);
     setCurrentSceneId(targetScene.id);
   }
 }}

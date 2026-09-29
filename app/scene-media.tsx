@@ -24,6 +24,7 @@ import Animated, {
 
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { getPersistentMediaUri } from '../utils/platformFiles';
+import { createLocalId } from '../utils/localIds';
 
 function DraggableAsset({
   asset,
@@ -40,8 +41,8 @@ function DraggableAsset({
   const imageY = useSharedValue(asset.y || 0);
 
   useEffect(() => {
-    imageX.value = asset.x || 0;
-    imageY.value = asset.y || 0;
+    imageX.set(asset.x || 0);
+    imageY.set(asset.y || 0);
   }, [asset.x, asset.y, imageX, imageY]);
 
   const CANVAS_WIDTH = 400;
@@ -60,26 +61,26 @@ function DraggableAsset({
 
   const gesture = Gesture.Pan()
     .onChange((event) => {
-      imageX.value = clamp(
-        imageX.value + event.changeX,
+      imageX.set(clamp(
+        imageX.get() + event.changeX,
         -20,
         CANVAS_WIDTH - IMAGE_WIDTH - 20
-      );
+      ));
 
-      imageY.value = clamp(
-        imageY.value + event.changeY,
+      imageY.set(clamp(
+        imageY.get() + event.changeY,
         -20,
         CANVAS_HEIGHT - IMAGE_HEIGHT - 20
-      );
+      ));
     })
     .onEnd(() => {
-      runOnJS(onMoveEnd)(asset.id, imageX.value, imageY.value);
+      runOnJS(onMoveEnd)(asset.id, imageX.get(), imageY.get());
     });
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [
-      { translateX: imageX.value },
-      { translateY: imageY.value },
+      { translateX: imageX.get() },
+      { translateY: imageY.get() },
     ],
   }));
 
@@ -143,13 +144,16 @@ export default function SceneMediaScreen() {
   const scene = scenes.find((s) => s.id === requestedSceneId);
   const sceneIndex = scenes.findIndex((s) => s.id === requestedSceneId);
 
-  const [assets, setAssets] = useState(scene?.assets || []);
-  const assetsRef = useRef(scene?.assets || []);
+  const assets = scene?.assets || [];
   const mediaActionInProgress = useRef(false);
   const recordingSaveInProgress = useRef(false);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [isMediaLibraryExpanded, setIsMediaLibraryExpanded] = useState(false);
-  const loadedSceneIdRef = useRef<string | undefined>(undefined);
+  const [selectionSceneId, setSelectionSceneId] = useState(scene?.id);
+  if (selectionSceneId !== scene?.id) {
+    setSelectionSceneId(scene?.id);
+    setSelectedAssetId(null);
+  }
 
   const imageAssets = assets.filter((asset) => asset.type === 'image');
   const audioAsset = assets.find((asset) => asset.type === 'audio');
@@ -210,23 +214,6 @@ export default function SceneMediaScreen() {
           .join(' · ')
       : 'No reusable media yet';
 
-  useEffect(() => {
-    const nextAssets = scene?.assets || [];
-    assetsRef.current = nextAssets;
-    setAssets(nextAssets);
-
-    if (loadedSceneIdRef.current !== scene?.id) {
-      setSelectedAssetId(null);
-      loadedSceneIdRef.current = scene?.id;
-    } else {
-      setSelectedAssetId((currentId) =>
-        currentId && nextAssets.some((asset) => asset.id === currentId)
-          ? currentId
-          : null,
-      );
-    }
-  }, [scene?.assets, scene?.id]);
-
 const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
 const recorderState = useAudioRecorderState(audioRecorder);
 
@@ -260,7 +247,9 @@ const dedupeSceneAssets = (nextAssets: any[]) => {
   });
 };
 
-const persistAssetsToScene = (nextAssets = assetsRef.current) => {
+const getLatestAssets = () => useStoryStore.getState().getCurrentStory()?.scenes.find((item) => item.id === requestedSceneId)?.assets || [];
+
+const persistAssetsToScene = (nextAssets = getLatestAssets()) => {
   if (!scene) return;
 
   const uniqueAssets = dedupeSceneAssets(nextAssets);
@@ -268,15 +257,13 @@ const persistAssetsToScene = (nextAssets = assetsRef.current) => {
 };
 
 const updateAssets = (getNextAssets: any[] | ((currentAssets: any[]) => any[])) => {
-  const currentAssets = assetsRef.current;
+  const currentAssets = getLatestAssets();
   const nextAssets =
     typeof getNextAssets === 'function'
       ? getNextAssets(currentAssets)
       : getNextAssets;
   const uniqueAssets = dedupeSceneAssets(nextAssets);
 
-  assetsRef.current = uniqueAssets;
-  setAssets(uniqueAssets);
   persistAssetsToScene(uniqueAssets);
 };
 
@@ -458,7 +445,7 @@ const openDrawingPad = (drawingAssetId?: string) => {
       selected,
       selected.mimeType || 'image/jpeg',
     );
-    const attachmentId = `asset-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const attachmentId = createLocalId('asset');
     updateAssets((currentAssets) => [
       ...currentAssets,
       {
@@ -472,6 +459,11 @@ const openDrawingPad = (drawingAssetId?: string) => {
         libraryItemId: attachmentId,
       },
     ]);
+    } catch (error) {
+      console.error('Image import failed:', error);
+      const message = 'The image could not be saved. Please try importing it again.';
+      if (Platform.OS === 'web') window.alert(message);
+      else Alert.alert('Could not import image', message);
     } finally {
       mediaActionInProgress.current = false;
     }
@@ -522,7 +514,7 @@ const stopRecording = async () => {
     );
   } else {
     permanentUri =
-      `${FileSystem.documentDirectory}voice-note-${Date.now()}.${extension}`;
+      `${FileSystem.documentDirectory}${createLocalId('voice-note')}.${extension}`;
     await FileSystem.copyAsync({
       from: recordedUri,
       to: permanentUri,
@@ -531,7 +523,7 @@ const stopRecording = async () => {
 
   stopPreviewAudio();
 
-  const attachmentId = `audio-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const attachmentId = createLocalId('audio');
   updateAssets((currentAssets) => [
     ...currentAssets.filter((asset) => asset.type !== 'audio'),
     {
@@ -542,6 +534,11 @@ const stopRecording = async () => {
       libraryItemId: attachmentId,
     },
   ]);
+  } catch (error) {
+    console.error('Audio import failed:', error);
+    const message = 'The audio could not be saved. Your existing audio has been kept. Please try again.';
+    if (Platform.OS === 'web') window.alert(message);
+    else Alert.alert('Could not import audio', message);
   } finally {
     recordingSaveInProgress.current = false;
   }
@@ -714,7 +711,7 @@ const pickAudio = async () => {
           info="Add uploaded images to this scene. Tap an image to select it, then drag it around, resize it, move it forward/backward, or remove it."
         />
 
-        <Pressable style={styles.buttonSecondary} onPress={pickImage}>
+        <Pressable style={styles.buttonSecondary} onPress={() => { void pickImage(); }}>
           <Text style={styles.buttonSecondaryText}>Add image</Text>
         </Pressable>
 
@@ -928,7 +925,7 @@ const pickAudio = async () => {
       styles.recordButton,
       recorderState.isRecording && styles.recordButtonActive,
     ]}
-    onPress={recorderState.isRecording ? stopRecording : startRecording}
+    onPress={() => { void (recorderState.isRecording ? stopRecording() : startRecording()); }}
   >
     <Text style={styles.recordButtonText}>
       {recorderState.isRecording ? 'Stop recording' : 'Record voice note'}

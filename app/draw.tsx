@@ -18,24 +18,25 @@ import DrawingCanvas, {
 import * as FileSystem from "expo-file-system/legacy";
 import { useStoryStore } from "../store/storyStore";
 import { confirmAction } from "../utils/platformDialogs";
+import { createLocalId } from "../utils/localIds";
 
 const CANVAS_BACKGROUND = "#FBF8EE";
 const ERASER_MIN_WIDTH = 16;
 const ERASER_MAX_WIDTH = 24;
 
 const DRAWING_COLORS = [
-  { name: "Black", value: "#111111", dark: true },
-  { name: "Dark grey", value: "#4B5563", dark: true },
-  { name: "White", value: "#FFFFFF", dark: false },
-  { name: "Red", value: "#DC3F45", dark: true },
-  { name: "Orange", value: "#F47B35", dark: false },
-  { name: "Yellow", value: "#F2C94C", dark: false },
-  { name: "Green", value: "#3C8D4E", dark: true },
-  { name: "Light blue", value: "#62A9E8", dark: false },
-  { name: "Dark blue", value: "#2456A6", dark: true },
-  { name: "Purple", value: "#7652A8", dark: true },
-  { name: "Pink", value: "#E978A8", dark: false },
-  { name: "Brown", value: "#8B5A3C", dark: true },
+  { name: "Black", hex: "#111111", dark: true },
+  { name: "Dark grey", hex: "#4B5563", dark: true },
+  { name: "White", hex: "#FFFFFF", dark: false },
+  { name: "Red", hex: "#DC3F45", dark: true },
+  { name: "Orange", hex: "#F47B35", dark: false },
+  { name: "Yellow", hex: "#F2C94C", dark: false },
+  { name: "Green", hex: "#3C8D4E", dark: true },
+  { name: "Light blue", hex: "#62A9E8", dark: false },
+  { name: "Dark blue", hex: "#2456A6", dark: true },
+  { name: "Purple", hex: "#7652A8", dark: true },
+  { name: "Pink", hex: "#E978A8", dark: false },
+  { name: "Brown", hex: "#8B5A3C", dark: true },
 ] as const;
 
 const BRUSH_SIZES = [
@@ -84,6 +85,7 @@ export default function DrawScreen() {
   const [isCanvasReady, setIsCanvasReady] = useState(false);
   const [historyIndex, setHistoryIndex] = useState(0);
   const [historyLength, setHistoryLength] = useState(1);
+  const [hasDrawing, setHasDrawing] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [feedback, setFeedback] = useState("");
@@ -97,6 +99,7 @@ export default function DrawScreen() {
     historyIndexRef.current = nextIndex;
     setHistoryLength(nextHistory.length);
     setHistoryIndex(nextIndex);
+    setHasDrawing(nextHistory[nextIndex] !== "");
     setIsDirty(nextHistory[nextIndex] !== savedSnapshotRef.current);
   }, []);
 
@@ -107,6 +110,7 @@ export default function DrawScreen() {
       savedSnapshotRef.current = snapshot;
       setHistoryLength(1);
       setHistoryIndex(0);
+      setHasDrawing(snapshot !== "");
       setIsDirty(false);
     },
     [],
@@ -172,7 +176,7 @@ export default function DrawScreen() {
     }
 
     router.dismissTo("/story");
-  }, [scene?.id]);
+  }, [scene]);
 
   const attemptToLeave = useCallback(() => {
     if (isSavingDrawing.current) {
@@ -241,11 +245,11 @@ export default function DrawScreen() {
     if (!scene || !isSavingDrawing.current) return;
 
     try {
-      const timestamp = Date.now();
+      const newDrawingId = createLocalId("drawing");
       let drawingUri = signature;
       if (Platform.OS !== "web") {
         const base64 = signature.replace("data:image/png;base64,", "");
-        drawingUri = `${FileSystem.documentDirectory}drawing-${timestamp}.png`;
+        drawingUri = `${FileSystem.documentDirectory}${newDrawingId}.png`;
         await FileSystem.writeAsStringAsync(drawingUri, base64, {
           encoding: FileSystem.EncodingType.Base64,
         });
@@ -254,7 +258,7 @@ export default function DrawScreen() {
       const isEditingExistingDrawing = !!drawingAsset;
       const attachmentId = isEditingExistingDrawing
         ? drawingAsset.id
-        : `drawing-${timestamp}-${Math.random().toString(36).slice(2, 7)}`;
+        : newDrawingId;
 
       updateScene(scene.id, (latestScene) => {
         const currentAssets = latestScene.assets || [];
@@ -435,7 +439,7 @@ export default function DrawScreen() {
 
   const canUndo = historyIndex > 0;
   const canRedo = historyIndex < historyLength - 1;
-  const canClear = historyRef.current[historyIndex] !== "" || isDirty;
+  const canClear = hasDrawing || isDirty;
 
   return (
     <SafeAreaView style={styles.container} edges={["top", "bottom"]}>
@@ -466,20 +470,20 @@ export default function DrawScreen() {
           contentContainerStyle={styles.colorRow}
         >
           {DRAWING_COLORS.map((color) => {
-            const isSelected = selectedColor === color.value && !isEraser;
+            const isSelected = selectedColor === color.hex && !isEraser;
             return (
               <Pressable
-                key={color.value}
+                key={color.hex}
                 accessibilityRole="button"
                 accessibilityLabel={`Use ${color.name}`}
                 accessibilityState={{ selected: isSelected }}
                 style={[
                   styles.colorSwatch,
-                  { backgroundColor: color.value },
+                  { backgroundColor: color.hex },
                   color.name === "White" && styles.whiteSwatch,
                   isSelected && styles.colorSwatchSelected,
                 ]}
-                onPress={() => selectColor(color.value)}
+                onPress={() => selectColor(color.hex)}
               >
                 {isSelected && (
                   <Text
@@ -620,7 +624,7 @@ export default function DrawScreen() {
           backgroundColor={CANVAS_BACKGROUND}
           minWidth={3}
           maxWidth={5}
-          onOK={handleSignatureResult}
+          onOK={(signature) => handleSignatureResult(signature)}
           onEmpty={handleEmptyResult}
           onBegin={beginStroke}
           onEnd={captureHistoryAfterStroke}

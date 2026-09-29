@@ -3,6 +3,44 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const ts = require('typescript');
+const vm = require('node:vm');
+
+test('native drawing coordinates stay under the finger after layout changes without clearing artwork', () => {
+  const { NATIVE_DRAWING_COORDINATES } = loadTypeScriptModule('utils/nativeDrawingCoordinates.ts');
+  for (const density of [1, 2, 3]) {
+    let rect = { left: 8, top: 12, width: 300, height: 150 };
+    const artwork = { existingStrokes: ['drawing', 'eraser stroke'] };
+    const canvas = {
+      width: 300 * density, height: 150 * density,
+      getBoundingClientRect: () => rect,
+      getContext: () => ({ getTransform: () => ({ a: density, d: density }) }),
+    };
+    const signaturePad = {
+      canvas, artwork,
+      _createPoint(x, y) { return { x: x - rect.left, y: y - rect.top }; },
+    };
+    const context = vm.createContext({ signaturePad });
+    vm.runInContext(NATIVE_DRAWING_COORDINATES, context);
+    assert.deepEqual(signaturePad._createPoint(158, 87), { x: 150, y: 75 });
+    rect = { left: 20, top: 30, width: 450, height: 300 };
+    // A finger at the displayed centre must still map to the bitmap centre.
+    assert.deepEqual(signaturePad._createPoint(245, 180), { x: 150, y: 75 });
+    assert.deepEqual(signaturePad._createPoint(470, 330), { x: 300, y: 150 });
+    vm.runInContext(NATIVE_DRAWING_COORDINATES, context);
+    assert.deepEqual(signaturePad._createPoint(245, 180), { x: 150, y: 75 });
+    assert.equal(signaturePad.artwork, artwork);
+    assert.equal(canvas.height, 150 * density);
+  }
+});
+
+test('both HTML exports omit the retired storytelling mode from the visible header', () => {
+  for (const file of ['app/story.tsx', 'store/storyStore.ts']) {
+    const header = read(file).match(/<div class="story-title">(.*?)<\/div>/)?.[1];
+    assert.ok(header);
+    assert.doesNotMatch(header, /\.mode|fictional|personal|symbolic/);
+    assert.match(header, /\.title/);
+  }
+});
 
 const read = (relativePath) =>
   fs.readFileSync(path.join(process.cwd(), relativePath), 'utf8');

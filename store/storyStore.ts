@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist, createJSONStorage, StateStorage } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
+import { createTrackedStorage } from "../utils/trackedStorage";
 import {
   Scene,
   StoryMode,
@@ -27,13 +28,13 @@ const universalStorage: StateStorage = {
     }
     return await AsyncStorage.getItem(name);
   },
-  setItem: async (name: string, value: string) => {
+  setItem: (name: string, value: string) => {
     if (Platform.OS === "web") {
       if (typeof window === "undefined") return;
       window.localStorage.setItem(name, value);
       return;
     }
-    await AsyncStorage.setItem(name, value);
+    return AsyncStorage.setItem(name, value);
   },
   removeItem: async (name: string) => {
     if (Platform.OS === "web") {
@@ -47,6 +48,8 @@ const universalStorage: StateStorage = {
 
 const createStoryValueId = () =>
   `value-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+export const storyPersistence = createTrackedStorage(universalStorage, Platform.OS === "web");
 
 const createSceneId = () =>
   `scene-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -569,7 +572,7 @@ export const useStoryStore = create<StoryStore>()(
     <div class="card">
     <div class="topbar">
       <div>
-        <div class="story-title">${currentStory.title} · ${currentStory.mode}</div>
+        <div class="story-title">${currentStory.title}</div>
       </div>
       <button class="restart" onclick="restartStory()">Restart</button>
     </div>
@@ -1357,7 +1360,7 @@ function restartStory() {
     {
       name: "storypaths-storage-v9",
       version: 4,
-      storage: createJSONStorage(() => universalStorage),
+      storage: createJSONStorage(() => storyPersistence.storage),
       migrate: (persistedState: any) => {
         const persistedStories = Array.isArray(persistedState?.stories)
           ? persistedState.stories
