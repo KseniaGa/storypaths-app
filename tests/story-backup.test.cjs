@@ -17,6 +17,7 @@ function loader(mocks = {}) {
     }).outputText;
     const localRequire = (id) => {
       if (Object.hasOwn(mocks, id)) return mocks[id];
+      if (id === 'expo-file-system') return { File: class { constructor() { throw new Error('Unexpected modern file read'); } } };
       if (id.startsWith('.')) return load(path.resolve(path.dirname(filename), id + '.ts'));
       return require(id);
     };

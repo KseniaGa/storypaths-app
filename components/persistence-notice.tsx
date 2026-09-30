@@ -1,10 +1,15 @@
-import { Pressable, Text } from "react-native";
+import { Platform, Pressable, Text } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { usePersistenceStatus } from "../hooks/use-persistence-status";
 import { storyPersistence } from "../store/storyStore";
 
 export function PersistenceNotice() {
   const status = usePersistenceStatus();
+  if (Platform.OS === "web" && status === "saving") return (
+    <SafeAreaView edges={["top", "left", "right"]} style={{ backgroundColor: "#fff8db", padding: 12 }}>
+      <Text accessibilityLiveRegion="polite">Saving changes… Please keep this page open until saving finishes.</Text>
+    </SafeAreaView>
+  );
   if (status !== "error") return null;
   return (
     <SafeAreaView edges={["top", "left", "right"]} style={{ backgroundColor: "#fff0e8", padding: 12 }}>

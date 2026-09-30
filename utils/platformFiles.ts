@@ -1,4 +1,5 @@
 import type { DocumentPickerAsset } from "expo-document-picker";
+import { File } from "expo-file-system";
 import * as FileSystem from "expo-file-system/legacy";
 import { Platform } from "react-native";
 
@@ -18,9 +19,21 @@ type PickedMediaFile = {
 
 const removeByteOrderMark = (text: string) => text.replace(/^\uFEFF/, "");
 
+// Browsers do not expose download completion for anchor-triggered downloads.
+// Large portable HTML files need their blob URL beyond the initial click.
+const DOWNLOAD_URL_LIFETIME_MS = 5 * 60 * 1000;
+
 export const readPickedTextFile = async (
   asset: PickedTextFile,
 ): Promise<string> => {
+  if (Platform.OS === "android" && asset.uri.startsWith("content://")) {
+    // Legacy readAsStringAsync rejects single-document Downloads URIs.
+    // The modern reader uses Android's content resolver with the picker grant.
+    // Keep File in the startup bundle: a dynamic import can reload Expo Go
+    // when its Metro development connection is unavailable.
+    return removeByteOrderMark(await new File(asset.uri).text());
+  }
+
   if (Platform.OS !== "web") {
     const text = await FileSystem.readAsStringAsync(asset.uri);
     return removeByteOrderMark(text);
@@ -138,7 +151,7 @@ export const downloadTextFileOnWeb = (
     link.click();
   } finally {
     link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_LIFETIME_MS);
   }
 
   return true;
@@ -182,7 +195,7 @@ export const downloadDataUrlOnWeb = (
     link.click();
   } finally {
     link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_LIFETIME_MS);
   }
 
   return true;

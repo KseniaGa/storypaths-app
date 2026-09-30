@@ -1,4 +1,5 @@
 import { restoreStoryBackup } from '../../utils/storyBackup';
+import { useStoryImportConflict } from '../../components/story-import-conflict';
 import { showMessage } from '../../utils/platformDialogs';
 import { useEffect, useState, useRef } from "react";
 import {
@@ -9,6 +10,7 @@ import {
   Alert,
   ScrollView,
   Modal,
+  Platform,
 } from "react-native";
 import { router, useNavigationContainerRef } from "expo-router";
 import { useStoryStore, storyPersistence } from "../../store/storyStore";
@@ -33,6 +35,7 @@ const STORY_ICON_PRESETS = [
 
 export default function HomeScreen() {
   const importInProgress = useRef(false);
+  const { chooseImportConflict, importConflictDialog } = useStoryImportConflict();
   const navigationRef = useNavigationContainerRef();
   const stories = useStoryStore((state) => state.stories);
   const openStory = useStoryStore((state) => state.openStory);
@@ -88,7 +91,9 @@ export default function HomeScreen() {
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: "application/json",
-        copyToCacheDirectory: true,
+        // Android grants access to the original content URI. Expo Go's shared
+        // picker cache can be outside this project's readable directories.
+        copyToCacheDirectory: Platform.OS !== "android",
         base64: false,
       });
 
@@ -109,8 +114,12 @@ export default function HomeScreen() {
         return;
       }
 
+      const existing = useStoryStore.getState().stories.find((story) => story.id === parsed.id);
+      const importMode = existing ? await chooseImportConflict(existing.title) : undefined;
+      if (importMode === 'cancel') return;
+
       const restored = await restoreStoryBackup(parsed);
-      importStory(restored.story);
+      importStory(restored.story, importMode);
       await storyPersistence.retry();
       if (storyPersistence.getStatus() === 'error') {
         showMessage('Imported, but not saved', 'The story is open in this session, but could not be saved to this device. Keep the app open and retry saving.');
@@ -406,6 +415,7 @@ export default function HomeScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+      {importConflictDialog}
     </ScrollView>
   );
 }

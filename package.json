@@ -12,12 +12,12 @@
     "test": "node --test tests/*.test.cjs"
   },
   "dependencies": {
-    "decode-uri-component": "file:vendor/decode-uri-component-compat",
     "@expo/vector-icons": "^15.0.3",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-navigation/bottom-tabs": "^7.4.0",
     "@react-navigation/elements": "^2.6.3",
     "@react-navigation/native": "^7.1.8",
+    "decode-uri-component": "file:vendor/decode-uri-component-compat",
     "expo": "~57.0.26",
     "expo-asset": "~57.0.18",
     "expo-audio": "~57.0.5",
@@ -55,6 +55,7 @@
     "@types/react": "~19.2.4",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~57.0.2",
+    "fake-indexeddb": "6.2.5",
     "typescript": "~6.0.3"
   },
   "overrides": {

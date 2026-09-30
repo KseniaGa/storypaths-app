@@ -9,6 +9,7 @@ export function createTrackedStorage(storage: StateStorage, synchronous = false)
   let latest: { name: string; value: string } | undefined;
   let pending: typeof latest;
   let running: Promise<void> | undefined;
+  let readError: string | null = null;
   const listeners = new Set<() => void>();
   const publish = (next: PersistenceStatus) => {
     status = next;
@@ -56,7 +57,17 @@ export function createTrackedStorage(storage: StateStorage, synchronous = false)
 
   return {
     storage: {
-      getItem: (name) => storage.getItem(name),
+      getItem: async (name) => {
+        readError = null;
+        listeners.forEach((listener) => listener());
+        try {
+          return await storage.getItem(name);
+        } catch (error) {
+          readError = error instanceof Error ? error.message : "Saved stories could not be loaded.";
+          publish("error");
+          throw error;
+        }
+      },
       removeItem: (name) => storage.removeItem(name),
       setItem: (name, value) => {
         latest = { name, value };
@@ -64,6 +75,11 @@ export function createTrackedStorage(storage: StateStorage, synchronous = false)
       },
     } satisfies StateStorage,
     getStatus: () => status,
+    getReadError: () => readError,
+    reportReadError: (error: unknown) => {
+      readError = error instanceof Error ? error.message : "Saved stories could not be loaded.";
+      publish("error");
+    },
     subscribe: (listener: () => void) => {
       listeners.add(listener);
       return () => { listeners.delete(listener); };

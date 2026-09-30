@@ -7,6 +7,7 @@ import { Platform } from 'react-native';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { PersistenceNotice } from '@/components/persistence-notice';
+import { BrowserStorageGate } from '@/components/browser-storage-gate';
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -20,10 +21,12 @@ return (
   <GestureHandlerRootView style={{ flex: 1 }}>
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <PersistenceNotice />
+      <BrowserStorageGate>
       <Stack screenOptions={{ headerShown: Platform.OS !== 'web' }}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
       </Stack>
+      </BrowserStorageGate>
       <StatusBar style="auto" />
     </ThemeProvider>
   </GestureHandlerRootView>

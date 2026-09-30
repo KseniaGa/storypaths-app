@@ -16,6 +16,7 @@ function loader(mocks = {}) {
     }).outputText;
     const localRequire = (id) => {
       if (Object.hasOwn(mocks, id)) return mocks[id];
+      if (id === 'expo-file-system') return { File: class { constructor() { throw new Error('Unexpected modern file read'); } } };
       if (id.startsWith('.')) return load(path.resolve(path.dirname(filename), id + '.ts'));
       return require(id);
     };
@@ -26,6 +27,68 @@ function loader(mocks = {}) {
 }
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+for (const platform of ['android', 'web']) {
+test(`${platform}: imported copies preserve the original and only explicit replacement overwrites it`, async () => {
+  const disk = new Map();
+  const backingStorage = {
+    getItem: (key) => disk.get(key) ?? null,
+    setItem: (key, value) => disk.set(key, value),
+    removeItem: (key) => disk.delete(key),
+  };
+  const originalWindow = global.window;
+  if (platform === 'web') global.window = {};
+  const mocks = {
+    'react-native': { Platform: { OS: platform, select: (options) => options[platform] ?? options.default } },
+    '@react-native-async-storage/async-storage': backingStorage,
+    '../utils/browserStorage': { browserStoryStorage: backingStorage },
+  };
+  try {
+    const { useStoryStore, storyPersistence } = loader(mocks)('store/storyStore.ts');
+    await tick();
+    const store = useStoryStore.getState();
+    const original = {
+      id: 'original', title: 'Same title', mode: 'fictional',
+      scenes: [{ id: 'start', title: 'Start', text: 'Local edits', assets: [
+        { id: 'drawing', type: 'image', uri: 'data:image/png;base64,YQ==', x: 5, y: 6, width: 100, height: 100 },
+      ], choices: [{ id: 'again', label: 'Loop', targetSceneId: 'start', requiredChoiceId: 'again', rememberChoice: true }] }],
+    };
+    store.importStory(original);
+    const before = JSON.stringify(store.getCurrentStory());
+    const backup = structuredClone(original);
+    backup.scenes[0].text = 'Imported changes';
+    store.importStory(backup, 'copy');
+    const copy = store.getCurrentStory();
+    assert.notEqual(copy.id, original.id);
+    assert.equal(copy.title, 'Same title (copy)');
+    assert.equal(JSON.stringify(useStoryStore.getState().stories.find((s) => s.id === original.id)), before);
+    assert.deepEqual(copy.scenes[0].assets, JSON.parse(before).scenes[0].assets);
+    assert.equal(copy.scenes[0].choices[0].targetSceneId, copy.scenes[0].id);
+    assert.equal(copy.scenes[0].choices[0].requiredChoiceId, copy.scenes[0].choices[0].id);
+    store.updateScene('start', { text: 'Edit only copy' });
+    assert.equal(useStoryStore.getState().stories.find((s) => s.id === original.id).scenes[0].text, 'Local edits');
+    store.importStory(backup); // An unanticipated conflict must never silently replace.
+    assert.equal(store.getCurrentStory().title, 'Same title (copy) 2');
+    store.importStory({ ...backup, id: 'unrelated' });
+    assert.equal(store.getCurrentStory().title, 'Same title');
+    assert.equal(useStoryStore.getState().stories.length, 4);
+    store.importStory(backup, 'replace');
+    assert.equal(useStoryStore.getState().stories.length, 4);
+    assert.equal(store.getCurrentStory().id, original.id);
+    assert.equal(store.getCurrentStory().scenes[0].text, 'Imported changes');
+    assert.equal(original.scenes[0].text, 'Local edits');
+    await storyPersistence.retry();
+    const reloaded = loader(mocks)('store/storyStore.ts');
+    await tick();
+    assert.equal(reloaded.useStoryStore.getState().stories.length, 4);
+    assert.equal(reloaded.useStoryStore.getState().getCurrentStory().id, original.id);
+    assert.equal(reloaded.useStoryStore.getState().stories.find((s) => s.id === copy.id).scenes[0].text, 'Edit only copy');
+  } finally {
+    if (originalWindow === undefined) delete global.window;
+    else global.window = originalWindow;
+  }
+});
+}
 const deferred = () => {
   let resolve;
   let reject;
@@ -281,6 +344,7 @@ test(`${platform}: real store retains text and replacement links after a failed 
   const mocks = {
     'react-native': { Platform: { OS: platform, select: (options) => options[platform] ?? options.default } },
     '@react-native-async-storage/async-storage': backingStorage,
+    '../utils/browserStorage': { browserStoryStorage: backingStorage },
   };
   try {
   const { useStoryStore, storyPersistence } = loader(mocks)('store/storyStore.ts');

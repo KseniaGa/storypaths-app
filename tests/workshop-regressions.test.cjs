@@ -56,6 +56,7 @@ const loadTypeScriptModule = (relativePath, mocks = {}) => {
   const module = { exports: {} };
   const localRequire = (id) => {
     if (Object.prototype.hasOwnProperty.call(mocks, id)) return mocks[id];
+    if (id === 'expo-file-system') return { File: class { constructor() { throw new Error('Unexpected modern file read'); } } };
     return require(id);
   };
   Function('require', 'module', 'exports', code)(
@@ -264,12 +265,135 @@ test('JSON imports use browser File text while native imports keep FileSystem', 
   );
 });
 
+test('both Android import screens read the granted document instead of Expo Go shared cache', async () => {
+  const contentUri = 'content://com.android.providers.downloads.documents/document/raw%3A%2Fstorage%2Femulated%2F0%2FDownload%2FTelegram%2Fthe_stars_will_tell%20(1).json';
+  const text = '\uFEFF' + JSON.stringify({ title: 'From Telegram Downloads', scenes: [], media: 'x'.repeat(7 * 1024 * 1024) });
+  const files = loadTypeScriptModule('utils/platformFiles.ts', {
+    'react-native': { Platform: { OS: 'android' } },
+    'expo-file-system/legacy': {
+      readAsStringAsync: async () => {
+        throw new Error('Unsupported scheme: legacy reader cannot open Downloads content URIs');
+      },
+    },
+    'expo-file-system': {
+      File: class {
+        constructor(uri) { assert.equal(uri, contentUri, 'preserve the granted URI exactly'); }
+        async text() { return text; }
+      },
+    },
+  });
+  for (const screen of ['app/(tabs)/index.tsx', 'app/new-story.tsx']) {
+    const ast = ts.createSourceFile(screen, read(screen), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    let handler;
+    const visit = (node) => {
+      if (ts.isVariableDeclaration(node) && node.name.getText(ast) === 'handleImportJson') handler = node.initializer.getText(ast);
+      ts.forEachChild(node, visit);
+    };
+    visit(ast);
+    assert.ok(handler);
+    for (const os of ['android', 'ios', 'web']) {
+      let imported;
+      const progress = { current: false };
+      const dependencies = {
+        importInProgress: progress,
+        Platform: { OS: os },
+        DocumentPicker: { getDocumentAsync: async (options) => {
+          assert.equal(options.copyToCacheDirectory, os !== 'android');
+          assert.equal(options.base64, false);
+          return { canceled: false, assets: [{ uri: contentUri }] };
+        } },
+        readPickedTextFile: files.readPickedTextFile,
+        useStoryStore: { getState: () => ({ stories: [] }) },
+        chooseImportConflict: () => assert.fail('no conflict expected'),
+        validateStoryImport: () => ({ valid: true }),
+        restoreStoryBackup: async (story) => ({ story, warnings: [] }),
+        importStory: (story) => { imported = story; },
+        storyPersistence: { retry: async () => {}, getStatus: () => 'saved' },
+        showMessage: (...args) => assert.fail(args.join(': ')),
+        router: { push: () => {} },
+      };
+      await Function(...Object.keys(dependencies), `return (${handler});`)(...Object.values(dependencies))();
+      assert.equal(imported.title, 'From Telegram Downloads');
+      assert.equal(imported.media.length, 7 * 1024 * 1024);
+      assert.equal(progress.current, false);
+    }
+  }
+});
+
+test('Android document reader is available in the startup bundle without a development-server fetch', () => {
+  const source = read('utils/platformFiles.ts');
+  const ast = ts.createSourceFile('platformFiles.ts', source, ts.ScriptTarget.Latest, true);
+  const fileImport = ast.statements.find((node) => ts.isImportDeclaration(node) && node.moduleSpecifier.text === 'expo-file-system');
+  assert.ok(fileImport, 'the file reader must be eagerly bundled, even when Metro disconnects');
+  assert.equal(fileImport.importClause.isTypeOnly, false);
+  assert.ok(fileImport.importClause.namedBindings.elements.some((item) => item.name.text === 'File' && !item.isTypeOnly));
+  const visit = (node) => {
+    if (ts.isCallExpression(node)) assert.notEqual(node.expression.kind, ts.SyntaxKind.ImportKeyword, 'file utilities must not trigger a split-bundle load');
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+});
+
+test('both import screens await the conflict decision before restoring media; cancel leaves storage untouched', async () => {
+  for (const screen of ['app/(tabs)/index.tsx', 'app/new-story.tsx']) {
+    const ast = ts.createSourceFile(screen, read(screen), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    let handler;
+    const visit = (node) => {
+      if (ts.isVariableDeclaration(node) && node.name.getText(ast) === 'handleImportJson') handler = node.initializer.getText(ast);
+      ts.forEachChild(node, visit);
+    };
+    visit(ast);
+    for (const decision of ['cancel', 'copy', 'replace']) {
+      const events = [];
+      let answer;
+      const prompt = new Promise((resolve) => { answer = resolve; });
+      const progress = { current: false };
+      const dependencies = {
+        importInProgress: progress, Platform: { OS: 'android' },
+        DocumentPicker: { getDocumentAsync: async () => ({ canceled: false, assets: [{ uri: 'content://backup' }] }) },
+        readPickedTextFile: async () => JSON.stringify({ id: 'matching', title: 'Backup title', scenes: [] }),
+        validateStoryImport: () => ({ valid: true }),
+        useStoryStore: { getState: () => ({ stories: [{ id: 'matching', title: 'Renamed locally' }] }) },
+        chooseImportConflict: (title) => { assert.equal(title, 'Renamed locally'); events.push('prompt'); return prompt; },
+        restoreStoryBackup: async (story) => { events.push('restore'); return { story, warnings: [] }; },
+        importStory: (story, mode) => { assert.equal(mode, decision); events.push('import'); },
+        storyPersistence: { retry: async () => { events.push('save'); }, getStatus: () => 'saved' },
+        showMessage: (...args) => assert.fail(args.join(': ')), router: { push: () => events.push('navigate') },
+      };
+      const running = Function(...Object.keys(dependencies), `return (${handler});`)(...Object.values(dependencies))();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(events, ['prompt']);
+      answer(decision);
+      await running;
+      assert.deepEqual(events, decision === 'cancel' ? ['prompt'] : ['prompt', 'restore', 'import', 'save', 'navigate']);
+      assert.equal(progress.current, false);
+    }
+  }
+});
+
+test('Android document reader propagates provider failures without guessing a filesystem path', async () => {
+  const failure = new Error('Document permission expired');
+  const files = loadTypeScriptModule('utils/platformFiles.ts', {
+    'react-native': { Platform: { OS: 'android' } },
+    'expo-file-system/legacy': {
+      readAsStringAsync: () => assert.fail('must not fall back to legacy or a decoded raw path'),
+    },
+    'expo-file-system': {
+      File: class { async text() { throw failure; } },
+    },
+  });
+  await assert.rejects(files.readPickedTextFile({
+    uri: 'content://com.android.providers.downloads.documents/document/raw%3A%2FDownload%2Fstory.json',
+  }), (error) => error === failure);
+});
+
 test('web text exports create and clean up a browser download link', () => {
   const originalDocument = global.document;
   const originalUrl = global.URL;
   const originalBlob = global.Blob;
   const originalSetTimeout = global.setTimeout;
   const events = [];
+  let finishDownloadLifetime;
   const link = {
     href: '',
     download: '',
@@ -308,8 +432,9 @@ test('web text exports create and clean up a browser download link', () => {
         this.type = options.type;
       }
     };
-    global.setTimeout = (callback) => {
-      callback();
+    global.setTimeout = (callback, delay) => {
+      assert.ok(delay >= 60_000, 'large downloads must retain their URL beyond the first second');
+      finishDownloadLifetime = callback;
       return 1;
     };
 
@@ -329,6 +454,8 @@ test('web text exports create and clean up a browser download link', () => {
     assert.equal(link.href, 'blob:story-download');
     assert.equal(link.download, 'download.json');
     assert.equal(link.style.display, 'none');
+    assert.deepEqual(events, ['create-url', 'append', 'click', 'remove']);
+    finishDownloadLifetime();
     assert.deepEqual(events, [
       'create-url',
       'append',

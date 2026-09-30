@@ -3,6 +3,7 @@ import { persist, createJSONStorage, StateStorage } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
 import { createTrackedStorage } from "../utils/trackedStorage";
+import { browserStoryStorage } from "../utils/browserStorage";
 import {
   Scene,
   StoryMode,
@@ -24,22 +25,21 @@ const universalStorage: StateStorage = {
   getItem: async (name: string) => {
     if (Platform.OS === "web") {
       if (typeof window === "undefined") return null;
-      return window.localStorage.getItem(name);
+      return browserStoryStorage.getItem(name);
     }
     return await AsyncStorage.getItem(name);
   },
   setItem: (name: string, value: string) => {
     if (Platform.OS === "web") {
       if (typeof window === "undefined") return;
-      window.localStorage.setItem(name, value);
-      return;
+      return browserStoryStorage.setItem(name, value);
     }
     return AsyncStorage.setItem(name, value);
   },
   removeItem: async (name: string) => {
     if (Platform.OS === "web") {
       if (typeof window === "undefined") return;
-      window.localStorage.removeItem(name);
+      await browserStoryStorage.removeItem(name);
       return;
     }
     await AsyncStorage.removeItem(name);
@@ -49,7 +49,7 @@ const universalStorage: StateStorage = {
 const createStoryValueId = () =>
   `value-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
-export const storyPersistence = createTrackedStorage(universalStorage, Platform.OS === "web");
+export const storyPersistence = createTrackedStorage(universalStorage);
 
 const createSceneId = () =>
   `scene-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -115,7 +115,7 @@ type StoryStore = {
   renameStoryValue: (id: string, name: string) => void;
   deleteStoryValue: (id: string) => void;
 
-  importStory: (story: StoryProject) => void;
+  importStory: (story: StoryProject, mode?: "copy" | "replace") => void;
 
   exportCurrentStoryAsHtml: () => string | null;
 
@@ -171,14 +171,26 @@ export const useStoryStore = create<StoryStore>()(
           };
         }),
 
-      importStory: (story) =>
+      importStory: (story, mode) =>
         set((state) => {
           const normalizedStory = normalizeStoryProject(story);
-          const existing = state.stories.find(
-            (existingStory) => existingStory.id === normalizedStory.id,
-          );
+            const existing = state.stories.find(
+              (existingStory) => existingStory.id === normalizedStory.id,
+            );
 
-          const stories = existing
+            // Replacement must be explicit. A late conflict also keeps both.
+            if (mode === "copy" || (existing && mode !== "replace")) {
+              do { normalizedStory.id = createStoryId(); }
+              while (state.stories.some((item) => item.id === normalizedStory.id));
+              const baseTitle = `${normalizedStory.title} (copy)`;
+              normalizedStory.title = baseTitle;
+              let suffix = 2;
+              while (state.stories.some((item) => item.title === normalizedStory.title)) {
+                normalizedStory.title = `${baseTitle} ${suffix++}`;
+              }
+            }
+
+            const stories = existing && mode === "replace"
             ? state.stories.map((existingStory) =>
                 existingStory.id === normalizedStory.id
                   ? normalizedStory
@@ -1380,6 +1392,8 @@ function restartStory() {
       onRehydrateStorage: () => (state, error) => {
         if (error) {
           console.error("Zustand Hydration Error:", error);
+          storyPersistence.reportReadError(error);
+          return;
         }
         state?.setHasHydrated(true);
       },
