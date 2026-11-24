@@ -2473,7 +2473,7 @@ function SceneEditorDraft() {
                               <View style={styles.checkboxTextArea}>
                                 <Text style={styles.checkboxLabel}>Show feedback in Play mode</Text>
                                 <Text style={styles.logicDescription}>
-                                  Briefly summarizes all value changes together.
+                                  Shows a short summary of what changed.
                                 </Text>
                               </View>
                             </Pressable>
@@ -2488,7 +2488,8 @@ function SceneEditorDraft() {
                                     valueFeedbackMessage: text,
                                   }),
                                 )}
-                                placeholder="Confidence +1 \u00B7 Energy \u22122"
+                                accessibilityLabel="Custom player feedback"
+                                placeholder="Optional: Write your own message"
                                 multiline
                               />
                             )}
@@ -3168,13 +3169,14 @@ const styles = StyleSheet.create({
 
   valueChangeAmountRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 12,
   },
 
   valueChangeAmountInput: {
-    minWidth: 84,
+    width: 84,
     minHeight: 44,
     paddingHorizontal: 12,
     borderWidth: 1,

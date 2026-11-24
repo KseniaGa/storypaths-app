@@ -1765,9 +1765,10 @@ function toggleAudio() {
 
   const storyTreeIncomingCounts = scenes.reduce<Record<string, number>>(
     (counts, scene) => {
-      scene.choices.forEach((choice) => {
-        if (choice.targetSceneId && storyTreeSceneById.has(choice.targetSceneId)) {
-          counts[choice.targetSceneId] = (counts[choice.targetSceneId] || 0) + 1;
+      const targets = new Set(scene.choices.map((choice) => choice.targetSceneId));
+      targets.forEach((targetId) => {
+        if (targetId && storyTreeSceneById.has(targetId)) {
+          counts[targetId] = (counts[targetId] || 0) + 1;
         }
       });
 
@@ -1920,13 +1921,15 @@ function toggleAudio() {
     const sourceNode = storyTreeNodeById.get(scene.id);
     if (!sourceNode) return [];
 
+    const connectedTargets = new Set<string>();
     return scene.choices
-      .map((choice: any, choiceIndex: number) => {
+      .map((choice, choiceIndex) => {
         const targetNode = choice.targetSceneId
           ? storyTreeNodeById.get(choice.targetSceneId)
           : undefined;
 
-        if (!targetNode) return null;
+        if (!targetNode || connectedTargets.has(targetNode.scene.id)) return null;
+        connectedTargets.add(targetNode.scene.id);
 
         const connectionKey = `${scene.id}-${choice.id || choiceIndex}-${choice.targetSceneId}`;
         const colorIndex =
@@ -1941,7 +1944,7 @@ function toggleAudio() {
           routeOffset: ((stableStoryTreeHash(connectionKey) % 5) - 2) * 3,
           sourceNode,
           targetNode,
-          isConverging: (storyTreeIncomingCounts[choice.targetSceneId] || 0) > 1,
+          isConverging: (storyTreeIncomingCounts[targetNode.scene.id] || 0) > 1,
           isBackLink: targetNode.level <= sourceNode.level,
         };
       })
